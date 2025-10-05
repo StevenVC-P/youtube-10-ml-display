@@ -1,0 +1,570 @@
+# YouTube 10 ML Display — Augment Requirements & Multi‑Sprint Plan
+
+**Owner:** Steven
+**Agent:** Augment (Claude-powered)
+**Target OS:** Windows 10/11 (PowerShell)
+**Python:** 3.11 (virtualenv: `.venv`)
+**Goal:** Produce a single continuous ~10‑hour, watchable YouTube video visualizing an Atari agent’s learning (starting with **Breakout**), while keeping the training loop maximally fast and reusable for other Atari games.
+
+---
+
+## 0) High-Level Architecture
+
+**Track A — Fast Trainer**
+
+* Stable-Baselines3 PPO (DQN optional later). No on-policy rendering.
+* Vectorized envs. Regular checkpoints (e.g., every 30–60 seconds).
+
+**Track B — Continuous Streamer**
+
+* Separate process that loads latest checkpoint, runs 1–4 eval envs at fixed FPS, composes a grid (e.g., 2×2), overlays HUD, and pipes frames to FFmpeg.
+* Saves either one continuous MP4 or safe 10–30 minute segments that can later be concatenated.
+
+**Generalization:** All behavior driven by `conf/config.yaml` so you can swap to other Atari games without code changes.
+
+---
+
+## 1) Baseline Stack, Constraints & Conventions
+
+* **Libraries present (already installed):** `gymnasium[atari,accept-rom-license]`, `ale-py`, `stable-baselines3`, `torch`, `numpy`, `opencv-python`, `moviepy`, `tensorboard`, `pyyaml`.
+* **FFmpeg:** assumed installed and on PATH; otherwise config key `ffmpeg_path` must be honored.
+* **Paths:** Windows-friendly; use `os.path` / `pathlib` consistently.
+* **Logging:** Print library + CUDA versions at startup. Emit absolute output paths when writing files.
+* **Seeding:** Global `seed` in config; trainer & eval share it unless overridden.
+* **File size:** Target 720p @ 30fps, CRF 23–26 for the long video.
+
+---
+
+## 2) Repository Layout (target)
+
+```
+youtube-10-ml-display/
+  conf/
+    config.yaml
+  envs/
+    atari_wrappers.py
+    make_env.py
+  agents/
+    algo_factory.py
+  training/
+    train.py
+    eval.py
+    callbacks.py
+  stream/
+    stream_eval.py         # continuous evaluation streamer
+    ffmpeg_io.py           # thin wrapper around ffmpeg subprocess
+  video/
+    milestones/.gitkeep
+    eval/.gitkeep
+    render/
+      parts/.gitkeep
+  models/
+    checkpoints/.gitkeep
+  logs/
+    tb/.gitkeep
+  video_tools/
+    build_manifest.py
+    render_supercut.py
+    concat_segments.py
+  scripts/
+    estimate_storage.py
+  tests/
+    test_env_factory.py
+    test_config_schema.py
+  README.md
+  requirements.txt
+  Makefile (optional for Windows; PowerShell commands documented in README)
+```
+
+---
+
+## 3) Config Schema (`conf/config.yaml`)
+
+```yaml
+project_name: "youtube-10-ml-display"
+seed: 42
+
+paths:
+  videos_milestones: "video/milestones"
+  videos_eval: "video/eval"
+  videos_parts: "video/render/parts"
+  logs_tb: "logs/tb"
+  models: "models/checkpoints"
+  ffmpeg_path: "ffmpeg"   # can be absolute path if needed
+
+game:
+  env_id: "ALE/Breakout-v5"   # swappable for other Atari games
+  frame_stack: 4
+  resize: [84, 84]
+  grayscale: true
+  max_skip: 4
+
+train:
+  algo: "ppo"                # "ppo" (default) or "dqn" later
+  policy: "CnnPolicy"
+  total_timesteps: 10000000
+  vec_envs: 8
+  n_steps: 128
+  batch_size: 256
+  learning_rate: 2.5e-4
+  clip_range: 0.1
+  ent_coef: 0.01
+  vf_coef: 0.5
+  gamma: 0.99
+  gae_lambda: 0.95
+  checkpoint_every_sec: 60    # trainer writes latest.zip
+  keep_last: 5
+
+recording:
+  fps: 30
+  crf: 23
+  milestone_clip_seconds: 90
+  eval_clip_seconds: 120
+  milestones_pct: [0,1,2,5,10,20,30,40,50,60,70,80,90,100]
+  eval_every_steps: 100000
+  eval_episodes: 2
+
+stream:
+  enabled: true
+  grid: 4                   # 1, 4, or 9
+  pane_size: [480, 360]
+  fps: 30
+  overlay_hud: true
+  checkpoint_poll_sec: 30
+  save_mode: "segments"     # "single" | "segments"
+  segment_seconds: 1800
+  output_basename: "youtube_continuous"
+  preset: "veryfast"
+  crf: 23
+
+render:
+  target_hours: 10
+  music_path: "assets/music.mp3"    # optional
+  add_titles: true
+```
+
+---
+
+## 4) Multi‑Sprint Plan (each sprint is self‑testable)
+
+> **Format per sprint**: *Objective • Deliverables • Explicit Tasks • Self‑Check(Agent) • Acceptance Tests (Runbook) • Definition of Done • Risks/Notes*
+
+### **Sprint 0 — Bootstrap & Config**
+
+**Objective**: Create repo structure, config loader, and basic README. Verify environment and paths.
+
+**Deliverables**
+
+* Folder tree (empty `.gitkeep`s in output dirs).
+* `conf/config.yaml` with schema above.
+* `README.md` with Windows PowerShell commands.
+* `tests/test_config_schema.py` (ensures required keys exist & types are sane).
+
+**Tasks**
+
+* Create directories.
+* Implement a `load_config()` helper that validates and logs final config.
+* Print Python + library versions at startup of any entry script.
+
+**Self‑Check (Augment)**
+
+* “I created all folders. I validated config and printed paths. Here is the stdout snippet and the absolute paths I detect.”
+
+**Acceptance (Run in PowerShell)**
+
+```powershell
+python - <<'PY'
+from pathlib import Path
+print('Repo OK?', Path('conf/config.yaml').exists())
+PY
+```
+
+**Definition of Done**
+
+* Running any entry script prints config echo + versions, no KeyErrors.
+
+**Risks/Notes**
+
+* Ensure Windows path separators handled via `pathlib`.
+
+---
+
+### **Sprint 1 — Env Factory & Wrappers**
+
+**Objective**: Build reusable Atari env factory for train/eval with wrappers.
+
+**Deliverables**
+
+* `envs/atari_wrappers.py` (MaxAndSkip, GrayScale, Resize, FrameStack).
+* `envs/make_env.py` with `make_train_env(cfg, seed, rank)` & `make_eval_env(cfg, seed)`.
+* `tests/test_env_factory.py` verifying obs shape/dtype and frame stack.
+
+**Tasks**
+
+* Implement wrapper pipeline from config.
+* Implement vector env creator (Sync or Subproc based on `train.vec_envs`).
+
+**Self‑Check**
+
+* “Obs shape is (84,84,4) after wrappers; dtype=uint8; action space matches Breakout.”
+
+**Acceptance**
+
+```powershell
+python - <<'PY'
+from conf import config as C
+from envs.make_env import make_eval_env
+import yaml
+cfg = yaml.safe_load(open('conf/config.yaml'))
+env = make_eval_env(cfg, seed=42)
+obs, _ = env.reset()
+print('Obs shape:', obs.shape)
+print('Action space:', env.action_space)
+PY
+```
+
+**Definition of Done**
+
+* Reset & one step run without error. Shapes/logs correct.
+
+**Risks**
+
+* ROM license prompt; ensure `accept-rom-license` is set via Gymnasium install.
+
+---
+
+### **Sprint 2 — PPO Trainer (no video)**
+
+**Objective**: Basic PPO training loop with TB logs and periodic checkpoints by **time** (sec) and/or **steps**.
+
+**Deliverables**
+
+* `agents/algo_factory.py` returning configured PPO.
+* `training/train.py` with vector envs, TB logs, timed checkpoint writer (`latest.zip` + rotating backup).
+* Prints path to first checkpoint.
+
+**Tasks**
+
+* Implement `create_algo(cfg, vec_env)`.
+* Add wall‑clock timer to save `latest.zip` every `checkpoint_every_sec`.
+
+**Self‑Check**
+
+* “Training runs for N steps. Checkpoint written to …/models/checkpoints/latest.zip (mtime: …). TB logs are at …/logs/tb.”
+
+**Acceptance**
+
+```powershell
+python training\train.py --config conf\config.yaml --dryrun-seconds 90
+# Expect: TB dir created, at least one checkpoint file exists
+```
+
+**Definition of Done**
+
+* TB scalars appear; a `latest.zip` exists and updates over time.
+
+**Risks**
+
+* File locking on Windows — write to temp then atomic rename.
+
+---
+
+### **Sprint 3 — Milestone Video Callback (short clips)**
+
+**Objective**: Record short milestone clips during training (without slowing training excessively).
+
+**Deliverables**
+
+* `training/callbacks.py`: `MilestoneVideoCallback` triggers brief `RecordVideo` rollouts at milestone % thresholds.
+* Saves MP4s under `video/milestones` with filename including global step & pct.
+
+**Tasks**
+
+* Detect crossing of thresholds based on `train.total_timesteps`.
+* Run short evaluation rollout in a separate env instance.
+
+**Self‑Check**
+
+* “At 1% milestone I saved `video/milestones/step_XXX_pct_1.mp4` (~90s). File size & duration reported.”
+
+**Acceptance**
+
+```powershell
+python training\train.py --config conf\config.yaml --dryrun-seconds 120
+# Expect: at least one MP4 in video\milestones
+```
+
+**Definition of Done**
+
+* At least one milestone clip appears by early progress; training continues normally.
+
+**Risks**
+
+* Ensure milestone capture does not block update loop for long; use short, bounded rollout.
+
+---
+
+### **Sprint 4 — Eval Script**
+
+**Objective**: Standalone evaluator that loads a checkpoint and records K episodes.
+
+**Deliverables**
+
+* `training/eval.py` with CLI args: `--checkpoint`, `--episodes`, `--seconds`.
+
+**Tasks**
+
+* Use `RecordVideo` wrapper to write to `video/eval`.
+
+**Self‑Check**
+
+* “Loaded checkpoint, ran 2 episodes, wrote 2 MP4s.”
+
+**Acceptance**
+
+```powershell
+python training\eval.py --checkpoint models\checkpoints\latest.zip --episodes 1 --seconds 60
+```
+
+**Definition of Done**
+
+* MP4s decode in VLC; paths printed.
+
+---
+
+### **Sprint 5 — Continuous Evaluation Streamer**
+
+**Objective**: Unbroken recording process in a separate script.
+
+**Deliverables**
+
+* `stream/ffmpeg_io.py`: launches ffmpeg for a single MP4 or segmented parts.
+* `stream/stream_eval.py`: maintains 1–4 eval envs, fixed FPS, grid mosaic, HUD, periodic reload of `latest.zip`.
+
+**Tasks**
+
+* Compose grid (1,4,9) with OpenCV; draw HUD (global step, checkpoint time, running reward).
+* Poll for newer checkpoint every `checkpoint_poll_sec`.
+
+**Self‑Check**
+
+* “Produced continuous video (or parts). I can see the policy improving over time.”
+
+**Acceptance**
+
+```powershell
+# Terminal 1: start trainer
+python training\train.py --config conf\config.yaml
+# Terminal 2: start streamer (segments every 30 min)
+python stream\stream_eval.py --config conf\config.yaml --grid 4 --fps 30 --save-mode segments --segment-seconds 1800
+```
+
+**Definition of Done**
+
+* Continuous files created for ≥10 minutes in test. CPU/GPU usage stable.
+
+**Risks**
+
+* Ensure ffmpeg subprocess stdin handling is robust; flush/close on exit.
+
+---
+
+### **Sprint 6 — Manifest & Supercut (post‑processing)**
+
+**Objective**: Build a manifest of clips and create a single long MP4 with optional music.
+
+**Deliverables**
+
+* `video_tools/build_manifest.py` → CSV of all clips (type, step, filename, duration_s).
+* `video_tools/render_supercut.py` → concatenates to single MP4, optional music mix.
+* `video_tools/concat_segments.py` → joins segments from `video/render/parts` into one MP4.
+
+**Tasks**
+
+* Use ffmpeg concat demuxer. Optional `amix` for background music.
+
+**Self‑Check**
+
+* “Manifest lists N files; supercut created at …/video/render/youtube_10h.mp4.”
+
+**Acceptance**
+
+```powershell
+python video_tools\build_manifest.py > manifest.csv
+python video_tools\render_supercut.py --manifest manifest.csv --target-hours 10 --music assets\music.mp3
+```
+
+**Definition of Done**
+
+* Output plays in VLC; duration within ±2% of 10 hours (if enough source clips exist).
+
+---
+
+### **Sprint 7 — Multi‑Game Generalization**
+
+**Objective**: Swap `game.env_id` to another Atari game without code changes.
+
+**Deliverables**
+
+* Confirm wrappers & action spaces adapt automatically.
+* README section: “Switching to Another Game”.
+
+**Tasks**
+
+* Validate Pong or SpaceInvaders.
+
+**Self‑Check**
+
+* “Changed env_id to ALE/Pong-v5; training/eval/stream all run without edits.”
+
+**Acceptance**
+
+```powershell
+# Edit conf/config.yaml: game.env_id: ALE/Pong-v5
+python training\train.py --config conf\config.yaml --dryrun-seconds 60
+```
+
+**Definition of Done**
+
+* No code changes required beyond config.
+
+---
+
+### **Sprint 8 — Reliability & Resume**
+
+**Objective**: Crash‑safe segmented output; resume training & streaming cleanly.
+
+**Deliverables**
+
+* Trainer resumes from latest checkpoint if present.
+* Streamer resumes writing segments with incremented indices; concat still works.
+
+**Acceptance**
+
+* Kill/restart both processes; verify continuity of segments and final concat.
+
+---
+
+### **Sprint 9 — Performance Tuning**
+
+**Objective**: Keep trainer fast, streamer smooth.
+
+**Tasks**
+
+* Auto‑detect CUDA; log device.
+* Allow configurable `vec_envs` & pane sizes; profile CPU.
+
+**Acceptance**
+
+* Document recommended settings for 4, 8, 16 envs.
+
+---
+
+### **Sprint 10 — Docs & Release**
+
+**Objective**: Final polish.
+
+**Deliverables**
+
+* README quickstart, Runbook (troubleshooting), and YouTube export tips.
+* Example `ffmpeg` command lines and expected file sizes.
+
+---
+
+## 5) Checkback Protocol (for Long Sessions)
+
+After **each sprint** Augment should post a **Checkback Block** in chat with:
+
+1. **Summary:** 3–6 bullet points of what changed.
+2. **Artifacts:** paths to files created/modified; first/last lines of key files.
+3. **Evidence:** short console logs proving acceptance tests passed (or where they failed).
+4. **Open Questions/Risks:** explicit yes/no questions for Steven if needed.
+5. **Next Sprint Proposal:** concise list of next steps.
+
+**Template (Augment posts this):**
+
+```
+[Sprint N Checkback]
+Summary:
+- ...
+Artifacts:
+- training/train.py (new)
+- models/checkpoints/latest.zip (mtime: ...)
+Evidence:
+- TB logs created at logs/tb
+- Video: video/milestones/step_100k_pct_1.mp4 (92s)
+Open Questions:
+- Do you want CRF 23 or 26 for smaller files?
+Next:
+- Implement continuous streamer grid=4 @30 FPS.
+```
+
+---
+
+## 6) Prompts for Augment (per Sprint)
+
+* **Sprint 0 Prompt:** “Scaffold the repository exactly as in the plan, create `conf/config.yaml` with the schema, add README, and a config loader that echoes config + library versions. Add a simple schema test.”
+* **Sprint 1 Prompt:** “Implement Atari wrappers and env factory with vectorization per config. Add a test verifying obs shape/dtype.”
+* **Sprint 2 Prompt:** “Implement PPO trainer with timed checkpoints (by seconds) writing `latest.zip` atomically. Log TB scalars.”
+* **Sprint 3 Prompt:** “Add MilestoneVideoCallback: record short videos at % thresholds into `video/milestones`.”
+* **Sprint 4 Prompt:** “Add `training/eval.py` to load a checkpoint and record K evaluation episodes.”
+* **Sprint 5 Prompt:** “Create `stream/ffmpeg_io.py` and `stream/stream_eval.py` to produce a continuous recording at fixed FPS with 1/4/9‑pane grid, periodic checkpoint reload, and segmented output.”
+* **Sprint 6 Prompt:** “Add `video_tools/build_manifest.py`, `render_supercut.py`, and `concat_segments.py` for post‑processing.”
+* **Sprint 7 Prompt:** “Prove multi‑game generalization: switch env_id to ALE/Pong‑v5 and run acceptance tests; update README.”
+* **Sprint 8 Prompt:** “Add resume logic for both trainer and streamer; crash‑safe segments.”
+* **Sprint 9 Prompt:** “Tune performance; document recommended settings.”
+* **Sprint 10 Prompt:** “Finalize docs, runbook, and YouTube export guidance.”
+
+---
+
+## 7) Runbook: Common PowerShell Commands
+
+```powershell
+# Activate venv
+.venv\Scripts\Activate
+
+# Start trainer (full or dryrun)
+python training\train.py --config conf\config.yaml
+python training\train.py --config conf\config.yaml --dryrun-seconds 120
+
+# Start continuous streamer
+python stream\stream_eval.py --config conf\config.yaml --grid 4 --fps 30 --save-mode segments --segment-seconds 1800
+
+# Evaluate from a checkpoint
+python training\eval.py --checkpoint models\checkpoints\latest.zip --episodes 2 --seconds 120
+
+# Build manifest & supercut
+python video_tools\build_manifest.py > manifest.csv
+python video_tools\render_supercut.py --manifest manifest.csv --target-hours 10 --music assets\music.mp3
+
+# Concat safe segments to final MP4
+python video_tools\concat_segments.py --parts-dir video\render\parts --out video\render\youtube_10h.mp4
+```
+
+---
+
+## 8) Risks & Mitigations
+
+* **ROM licensing prompts**: Ensure the `gymnasium[atari,accept-rom-license]` extra was used (already installed). If not, document manual accept steps.
+* **FFmpeg not found**: Respect `paths.ffmpeg_path`; fail with a helpful message.
+* **Windows file locks**: Save checkpoints to temp then rename to `latest.zip`.
+* **Throughput vs. smooth video**: Keep trainer render‑free; streamer fixed FPS.
+* **Disk size**: 10h at 720p30 CRF23 may be ~20–40 GB. Ensure free space.
+
+---
+
+## 9) Definition of Project Done
+
+* One continuous 10h YouTube‑ready MP4 (or concat of safe segments) demonstrating agent improvement.
+* Reusable config switches game with no code edits.
+* README and runbook enable a clean run on a new Windows machine.
+* Minimal tests pass; basic reliability (resume) verified.
+
+---
+
+## 10) Nice‑to‑Haves (Post‑MVP)
+
+* W&B / MLflow tracking toggle.
+* Title overlays ("Day N") auto‑generated from clip indices.
+* Simple web preview server for live HLS.
+* DQN implementation via the same factory.

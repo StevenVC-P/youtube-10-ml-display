@@ -1,0 +1,60 @@
+project_name: "youtube-10-ml-display"
+seed: 42
+
+paths:
+  videos_milestones: "video/milestones"
+  videos_eval: "video/eval"
+  videos_parts: "video/render/parts"
+  logs_tb: "logs/tb"
+  models: "models/checkpoints"
+  ffmpeg_path: "ffmpeg" # can be absolute path if needed
+
+game:
+  env_id: "BreakoutNoFrameskip-v4" # swappable for other Atari games
+  frame_stack: 4
+  resize: [84, 84]
+  grayscale: true
+  max_skip: 4
+
+train:
+  algo: "ppo" # "ppo" (default) or "dqn" later
+  policy: "CnnPolicy"
+  total_timesteps: 10000000
+  vec_envs: 8
+  n_steps: 128
+  batch_size: 256
+  learning_rate: 2.5e-4
+  clip_range: 0.1
+  ent_coef: 0.01
+  vf_coef: 0.5
+  gamma: 0.99
+  gae_lambda: 0.95
+  checkpoint_every_sec: 60 # trainer writes latest.zip
+  keep_last: 5
+
+recording:
+  fps: 30
+  crf: 23
+  milestone_clip_seconds: 90
+  eval_clip_seconds: 120
+  milestones_pct: [0, 1, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+  eval_every_steps: 100000
+  eval_episodes: 2
+
+stream:
+  enabled: true
+  grid: 4 # 1, 4, or 9
+  pane_size: [480, 360]
+  fps: 30
+  overlay_hud: true
+  checkpoint_poll_sec: 30
+  save_mode: "segments" # "single" | "segments"
+  segment_seconds: 1800
+  output_basename: "youtube_continuous"
+  preset: "veryfast"
+  crf: 23
+
+render:
+  target_hours: 10
+  music_path: "assets/music.mp3" # optional
+  add_titles: true

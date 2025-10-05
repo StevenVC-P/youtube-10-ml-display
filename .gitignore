@@ -1,0 +1,95 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ML/AI specific
+models/checkpoints/*.zip
+models/checkpoints/*.pt
+models/checkpoints/*.pth
+!models/checkpoints/.gitkeep
+
+# Logs
+logs/tb/*
+!logs/tb/.gitkeep
+*.log
+
+# Video outputs
+video/milestones/*
+video/eval/*
+video/render/parts/*
+!video/milestones/.gitkeep
+!video/eval/.gitkeep
+!video/render/parts/.gitkeep
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# OS specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project specific test files
+test_*.txt
+*_results.txt
+debug_*.py
+test_atari_quick.py
+test_env_simple.py
+test_basic.py
+check_atari.py
+fix_atari.py
+validate_sprint1.py
+install_atari.py
+install_atari.bat
+run_tests.py
+test_env_to_file.py
+SPRINT1_STATUS.md
+
+# FFmpeg (if downloaded locally)
+ffmpeg.exe
+ffprobe.exe
