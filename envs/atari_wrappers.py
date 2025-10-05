@@ -189,9 +189,9 @@ class ResizeWrapper(gym.ObservationWrapper):
 
 class FrameStackWrapper(gym.Wrapper):
     """
-    Stack the last N frames along a new axis.
+    Stack the last N frames along the channel dimension for Stable-Baselines3 compatibility.
     """
-    
+
     def __init__(self, env: gym.Env, num_stack: int = 4):
         """
         Args:
@@ -200,35 +200,62 @@ class FrameStackWrapper(gym.Wrapper):
         """
         super().__init__(env)
         self.num_stack = num_stack
-        
+
         assert isinstance(env.observation_space, spaces.Box), "Expected Box observation space"
         old_shape = env.observation_space.shape
-        
-        # Stack along the last axis
-        new_shape = old_shape + (num_stack,)
+
+        # For grayscale images: (height, width, 1) -> (height, width, num_stack)
+        # Stack along the channel dimension (last axis)
+        if len(old_shape) == 3 and old_shape[2] == 1:
+            new_shape = (old_shape[0], old_shape[1], num_stack)
+        else:
+            # For RGB or other formats, multiply channels by num_stack
+            new_shape = old_shape[:-1] + (old_shape[-1] * num_stack,)
+
         self.observation_space = spaces.Box(
             low=0,
             high=255,
             shape=new_shape,
             dtype=env.observation_space.dtype
         )
-        
-        # Initialize frame buffer
-        self.frames = np.zeros(new_shape, dtype=env.observation_space.dtype)
-    
+
+        # Initialize frame buffer - store individual frames
+        # For grayscale (84, 84, 1) -> store as (84, 84)
+        # For RGB (84, 84, 3) -> store as (84, 84, 3)
+        if len(old_shape) == 3 and old_shape[2] == 1:
+            self.frame_shape = old_shape[:-1]  # Remove channel dimension for grayscale
+        else:
+            self.frame_shape = old_shape  # Keep full shape for RGB
+        self.frames = np.zeros((num_stack,) + self.frame_shape, dtype=env.observation_space.dtype)
+
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
+
+        # Extract frame (remove channel dimension if it's 1)
+        frame = obs.squeeze(-1) if len(obs.shape) == 3 and obs.shape[-1] == 1 else obs
+
         # Fill all frames with the initial observation
         for i in range(self.num_stack):
-            self.frames[..., i] = obs
-        return self.frames.copy(), info
-    
+            self.frames[i] = frame
+
+        return self._get_stacked_obs(), info
+
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
+
+        # Extract frame (remove channel dimension if it's 1)
+        frame = obs.squeeze(-1) if len(obs.shape) == 3 and obs.shape[-1] == 1 else obs
+
         # Shift frames and add new observation
-        self.frames[..., :-1] = self.frames[..., 1:]
-        self.frames[..., -1] = obs
-        return self.frames.copy(), reward, terminated, truncated, info
+        self.frames[:-1] = self.frames[1:]
+        self.frames[-1] = frame
+
+        return self._get_stacked_obs(), reward, terminated, truncated, info
+
+    def _get_stacked_obs(self):
+        """Get stacked observation with frames as channels"""
+        # Stack frames along channel dimension: (height, width, num_stack)
+        return np.stack(self.frames, axis=-1)
 
 
 def apply_atari_wrappers(env: gym.Env, config: Dict[str, Any]) -> gym.Env:
