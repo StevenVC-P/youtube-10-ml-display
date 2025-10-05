@@ -140,7 +140,12 @@ class TestAtariWrappers:
         expected_channels = 1 if game_config['grayscale'] else 3
         expected_stack = game_config['frame_stack']
 
-        expected_shape = (expected_height, expected_width, expected_channels, expected_stack)
+        # For frame stacking, frames are stacked along channel dimension
+        # So (84, 84, 1, 4) becomes (84, 84, 4) for grayscale
+        if game_config['grayscale']:
+            expected_shape = (expected_height, expected_width, expected_stack)
+        else:
+            expected_shape = (expected_height, expected_width, expected_channels * expected_stack)
         assert obs.shape == expected_shape
         assert obs.dtype == np.uint8
         
@@ -242,7 +247,12 @@ class TestEnvironmentFactory:
         expected_height, expected_width = game_config['resize']
         expected_channels = 1 if game_config['grayscale'] else 3
         expected_stack = game_config['frame_stack']
-        expected_shape = (expected_height, expected_width, expected_channels, expected_stack)
+        # For frame stacking, frames are stacked along channel dimension
+        # So (84, 84, 1, 4) becomes (84, 84, 4) for grayscale
+        if game_config['grayscale']:
+            expected_shape = (expected_height, expected_width, expected_stack)
+        else:
+            expected_shape = (expected_height, expected_width, expected_channels * expected_stack)
 
         assert obs.shape == expected_shape, f"Expected {expected_shape}, got {obs.shape}"
 
