@@ -7,17 +7,17 @@ paths:
   videos_parts: "video/render/parts"
   logs_tb: "logs/tb"
   models: "models/checkpoints"
-  ffmpeg_path: "ffmpeg" # can be absolute path if needed
+  ffmpeg_path: "C:\\Users\\steve\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.0-full_build\\bin\\ffmpeg.exe"
 
 game:
-  env_id: "BreakoutNoFrameskip-v4" # swappable for other Atari games
+  env_id: "BreakoutNoFrameskip-v4"
   frame_stack: 4
   resize: [84, 84]
   grayscale: true
   max_skip: 4
 
 train:
-  algo: "ppo" # "ppo" (default) or "dqn" later
+  algo: "ppo"
   policy: "CnnPolicy"
   total_timesteps: 10000000
   vec_envs: 8
@@ -29,7 +29,7 @@ train:
   vf_coef: 0.5
   gamma: 0.99
   gae_lambda: 0.95
-  checkpoint_every_sec: 60 # trainer writes latest.zip
+  checkpoint_every_sec: 60
   keep_last: 5
 
 recording:
@@ -43,12 +43,12 @@ recording:
 
 stream:
   enabled: true
-  grid: 4 # 1, 4, or 9
+  grid: 4
   pane_size: [480, 360]
   fps: 30
   overlay_hud: true
   checkpoint_poll_sec: 30
-  save_mode: "segments" # "single" | "segments"
+  save_mode: "segments"
   segment_seconds: 1800
   output_basename: "youtube_continuous"
   preset: "veryfast"
@@ -56,5 +56,5 @@ stream:
 
 render:
   target_hours: 10
-  music_path: "assets/music.mp3" # optional
+  music_path: "assets/music.mp3"
   add_titles: true
