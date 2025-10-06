@@ -25,6 +25,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from conf.config import load_config
 from envs.make_env import make_vec_env, get_env_info
 from agents.algo_factory import create_algo, print_system_info, get_algorithm_info
+from training.callbacks import MilestoneVideoCallback, TrainingProgressCallback
 
 
 class TimedCheckpointCallback(BaseCallback):
@@ -226,10 +227,20 @@ def train_agent(
         print(f"📊 Algorithm Configuration:")
         for key, value in algo_info.items():
             print(f"  • {key}: {value}")
-    
+
+    # Determine training duration
+    total_timesteps = train_config.get('total_timesteps', 10000000)
+
+    if dryrun_seconds:
+        # Estimate timesteps for dryrun
+        estimated_steps_per_sec = 1000  # Conservative estimate
+        total_timesteps = min(total_timesteps, dryrun_seconds * estimated_steps_per_sec)
+        if verbose > 0:
+            print(f"🧪 Dry run mode: Training for ~{dryrun_seconds} seconds ({total_timesteps:,} steps)")
+
     # Setup callbacks
     callbacks = []
-    
+
     # Timed checkpoint callback
     checkpoint_callback = TimedCheckpointCallback(
         save_path=str(models_path),
@@ -238,7 +249,28 @@ def train_agent(
         verbose=verbose
     )
     callbacks.append(checkpoint_callback)
-    
+
+    # Milestone video callback
+    recording_config = config.get('recording', {})
+    if recording_config.get('milestones_pct'):
+        milestone_callback = MilestoneVideoCallback(
+            config=config,
+            milestones_pct=recording_config['milestones_pct'],
+            clip_seconds=recording_config.get('milestone_clip_seconds', 90),
+            fps=recording_config.get('fps', 30),
+            verbose=verbose
+        )
+        callbacks.append(milestone_callback)
+
+        # Training progress callback (works well with milestone callback)
+        progress_callback = TrainingProgressCallback(
+            total_timesteps=total_timesteps,
+            milestones_pct=recording_config['milestones_pct'],
+            log_every_steps=10000,
+            verbose=verbose
+        )
+        callbacks.append(progress_callback)
+
     # Training stats callback
     stats_callback = TrainingStatsCallback(
         log_every_steps=1000,
@@ -247,17 +279,7 @@ def train_agent(
     callbacks.append(stats_callback)
     
     callback_list = CallbackList(callbacks)
-    
-    # Determine training duration
-    total_timesteps = train_config.get('total_timesteps', 10000000)
-    
-    if dryrun_seconds:
-        # Estimate timesteps for dryrun
-        estimated_steps_per_sec = 1000  # Conservative estimate
-        total_timesteps = min(total_timesteps, dryrun_seconds * estimated_steps_per_sec)
-        if verbose > 0:
-            print(f"🧪 Dry run mode: Training for ~{dryrun_seconds} seconds ({total_timesteps:,} steps)")
-    
+
     if verbose > 0:
         print(f"🚀 Starting training for {total_timesteps:,} timesteps...")
         print(f"💾 Checkpoints will be saved to: {models_path.absolute()}")
