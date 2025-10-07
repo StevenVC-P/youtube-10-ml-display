@@ -59,9 +59,15 @@ logs/tb/*
 video/milestones/*
 video/eval/*
 video/render/parts/*
+video/demo/*
+video/realistic_gameplay/*
+video/test/*
 !video/milestones/.gitkeep
 !video/eval/.gitkeep
 !video/render/parts/.gitkeep
+!video/demo/.gitkeep
+!video/realistic_gameplay/.gitkeep
+!video/test/.gitkeep
 
 # Temporary files
 *.tmp
@@ -89,6 +95,19 @@ install_atari.bat
 run_tests.py
 test_env_to_file.py
 SPRINT1_STATUS.md
+
+# Sprint 5 test files (temporary)
+test_ffmpeg_only.py
+test_lightweight_sprint5.py
+test_sprint5_lightweight.py
+test_sprint5_minimal.py
+test_10_hour_setup.py
+test_simple_10_hour.py
+stream_real_gameplay.py
+create_training_video_demo.py
+preflight_check.py
+start_10_hour_training.py
+run_10_hour_training.py
 
 # FFmpeg (if downloaded locally)
 ffmpeg.exe
