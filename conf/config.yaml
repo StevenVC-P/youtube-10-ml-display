@@ -58,3 +58,18 @@ render:
   target_hours: 10
   music_path: "assets/music.mp3"
   add_titles: true
+
+video_tools:
+  manifest:
+    output_path: "manifest.csv"
+    include_metadata: true
+    scan_subdirs: true
+  concat:
+    method: "auto" # "auto", "file_list", "filter_complex"
+    output_path: "video/render/youtube_10h.mp4"
+    validate_compatibility: true
+  supercut:
+    output_path: "video/render/youtube_supercut.mp4"
+    clip_selection_strategy: "intelligent" # "intelligent", "chronological", "random"
+    max_clips: 100
+    transition_duration: 0.5
