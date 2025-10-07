@@ -15,7 +15,7 @@ import torch
 def print_system_info():
     """Print system and library information at startup"""
     print("=" * 60)
-    print("🚀 YouTube 10 ML Display - Algorithm Factory")
+    print(">> YouTube 10 ML Display - Algorithm Factory")
     print("=" * 60)
     
     # Library versions
@@ -24,20 +24,20 @@ def print_system_info():
     import numpy as np
     import cv2
     
-    print(f"📚 Library Versions:")
-    print(f"  • Stable-Baselines3: {stable_baselines3.__version__}")
-    print(f"  • Gymnasium: {gymnasium.__version__}")
-    print(f"  • PyTorch: {torch.__version__}")
-    print(f"  • NumPy: {np.__version__}")
-    print(f"  • OpenCV: {cv2.__version__}")
-    
+    print(f">> Library Versions:")
+    print(f"  - Stable-Baselines3: {stable_baselines3.__version__}")
+    print(f"  - Gymnasium: {gymnasium.__version__}")
+    print(f"  - PyTorch: {torch.__version__}")
+    print(f"  - NumPy: {np.__version__}")
+    print(f"  - OpenCV: {cv2.__version__}")
+
     # CUDA information
     if torch.cuda.is_available():
-        print(f"🔥 CUDA Available: {torch.cuda.get_device_name(0)}")
-        print(f"  • CUDA Version: {torch.version.cuda}")
-        print(f"  • Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        print(f">> CUDA Available: {torch.cuda.get_device_name(0)}")
+        print(f"  - CUDA Version: {torch.version.cuda}")
+        print(f"  - Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
     else:
-        print("💻 CUDA Not Available - Using CPU")
+        print(">> CUDA Not Available - Using CPU")
     
     print("=" * 60)
 
@@ -221,12 +221,12 @@ if __name__ == "__main__":
         algo = create_algo(config, vec_env, tensorboard_log='logs/tb/test')
         info = get_algorithm_info(algo)
 
-        print(f"\n📊 Algorithm Info:")
+        print(f"\n>> Algorithm Info:")
         for key, value in info.items():
-            print(f"  • {key}: {value}")
+            print(f"  - {key}: {value}")
 
         vec_env.close()
-        print("\n✅ Algorithm factory test completed successfully!")
+        print("\n>> Algorithm factory test completed successfully!")
 
     except Exception as e:
         print(f"\n❌ Test failed: {e}")

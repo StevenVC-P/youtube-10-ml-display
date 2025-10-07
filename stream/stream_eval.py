@@ -253,13 +253,13 @@ class ContinuousEvaluator:
                 })
             
             if self.args.verbose >= 1:
-                print(f"✅ Created {len(self.environments)} evaluation environments")
-            
+                print(f">> Created {len(self.environments)} evaluation environments")
+
             return True
-            
+
         except Exception as e:
             if self.args.verbose >= 1:
-                print(f"❌ Failed to setup environments: {e}")
+                print(f"ERROR: Failed to setup environments: {e}")
             return False
     
     def load_latest_checkpoint(self) -> bool:
@@ -270,7 +270,7 @@ class ContinuousEvaluator:
             
             if not latest_checkpoint.exists():
                 if self.args.verbose >= 2:
-                    print(f"⚠️ No checkpoint found at {latest_checkpoint}")
+                    print(f"WARNING: No checkpoint found at {latest_checkpoint}")
                 return False
             
             # Check if checkpoint is newer
@@ -292,13 +292,13 @@ class ContinuousEvaluator:
             
             if self.args.verbose >= 1:
                 checkpoint_time = datetime.fromtimestamp(checkpoint_mtime).strftime("%H:%M:%S")
-                print(f"🔄 Loaded checkpoint from {checkpoint_time}")
-            
+                print(f">> Loaded checkpoint from {checkpoint_time}")
+
             return True
-            
+
         except Exception as e:
             if self.args.verbose >= 1:
-                print(f"❌ Failed to load checkpoint: {e}")
+                print(f"ERROR: Failed to load checkpoint: {e}")
             return False
     
     def step_environments(self) -> List[np.ndarray]:
@@ -345,7 +345,7 @@ class ContinuousEvaluator:
                 
             except Exception as e:
                 if self.args.verbose >= 2:
-                    print(f"⚠️ Error in environment {i}: {e}")
+                    print(f"WARNING: Error in environment {i}: {e}")
                 
                 # Create error placeholder
                 placeholder = np.full((self.pane_size[1], self.pane_size[0], 3), (64, 0, 0), dtype=np.uint8)
@@ -366,17 +366,17 @@ class ContinuousEvaluator:
 
             except Exception as e:
                 if self.args.verbose >= 2:
-                    print(f"⚠️ Checkpoint monitor error: {e}")
+                    print(f"WARNING: Checkpoint monitor error: {e}")
                 time.sleep(5)  # Wait longer on error
 
     def run_streaming(self) -> bool:
         """Main streaming loop."""
         if self.args.verbose >= 1:
-            print(f"🎬 Starting continuous evaluation stream:")
-            print(f"  • Grid: {self.grid_size} panes ({self.grid_composer.grid_rows}x{self.grid_composer.grid_cols})")
-            print(f"  • Resolution: {self.grid_composer.output_width}x{self.grid_composer.output_height}")
-            print(f"  • FPS: {self.fps}")
-            print(f"  • Save mode: {self.save_mode}")
+            print(f">> Starting continuous evaluation stream:")
+            print(f"  - Grid: {self.grid_size} panes ({self.grid_composer.grid_rows}x{self.grid_composer.grid_cols})")
+            print(f"  - Resolution: {self.grid_composer.output_width}x{self.grid_composer.output_height}")
+            print(f"  - FPS: {self.fps}")
+            print(f"  - Save mode: {self.save_mode}")
             if self.segment_seconds:
                 print(f"  • Segment duration: {self.segment_seconds}s")
 
@@ -393,7 +393,7 @@ class ContinuousEvaluator:
             # Check if FFmpeg is available, use mock mode if not
             ffmpeg_available = test_ffmpeg_availability()
             if not ffmpeg_available and self.args.verbose >= 1:
-                print("⚠️ FFmpeg not available, using mock mode for testing")
+                print("WARNING: FFmpeg not available, using mock mode for testing")
 
             with FFmpegWriter(
                 output_path=output_path,
@@ -449,7 +449,7 @@ class ContinuousEvaluator:
                             self.global_step += 1
                         else:
                             if self.args.verbose >= 1:
-                                print("⚠️ Failed to write frame, stopping...")
+                                print("WARNING: Failed to write frame, stopping...")
                             break
 
                         # Frame rate control
@@ -466,15 +466,15 @@ class ContinuousEvaluator:
                             elapsed = time.time() - self.start_time
                             actual_fps = self.frames_streamed / elapsed
                             if self.args.verbose >= 1:
-                                print(f"📊 Streaming: {self.frames_streamed} frames, {elapsed:.0f}s, {actual_fps:.1f} FPS")
+                                print(f">> Streaming: {self.frames_streamed} frames, {elapsed:.0f}s, {actual_fps:.1f} FPS")
 
                     except KeyboardInterrupt:
                         if self.args.verbose >= 1:
-                            print("\n⚠️ Streaming interrupted by user")
+                            print("\nWARNING: Streaming interrupted by user")
                         break
                     except Exception as e:
                         if self.args.verbose >= 1:
-                            print(f"❌ Streaming error: {e}")
+                            print(f"ERROR: Streaming error: {e}")
                         if self.args.verbose >= 2:
                             import traceback
                             traceback.print_exc()
@@ -488,11 +488,11 @@ class ContinuousEvaluator:
                     actual_fps = self.frames_streamed / elapsed if elapsed > 0 else 0
 
                     if self.args.verbose >= 1:
-                        print(f"\n📈 Streaming completed:")
-                        print(f"  • Total frames: {self.frames_streamed}")
-                        print(f"  • Duration: {elapsed:.1f}s")
-                        print(f"  • Average FPS: {actual_fps:.1f}")
-                        print(f"  • Episodes completed: {len(self.episode_rewards)}")
+                        print(f"\n>> Streaming completed:")
+                        print(f"  - Total frames: {self.frames_streamed}")
+                        print(f"  - Duration: {elapsed:.1f}s")
+                        print(f"  - Average FPS: {actual_fps:.1f}")
+                        print(f"  - Episodes completed: {len(self.episode_rewards)}")
                         if self.episode_rewards:
                             print(f"  • Mean reward: {np.mean(self.episode_rewards):.2f}")
 
@@ -500,7 +500,7 @@ class ContinuousEvaluator:
 
         except Exception as e:
             if self.args.verbose >= 1:
-                print(f"❌ Streaming failed: {e}")
+                print(f"ERROR: Streaming failed: {e}")
             return False
         finally:
             self.running = False
@@ -527,7 +527,7 @@ class ContinuousEvaluator:
 
         except Exception as e:
             if self.args.verbose >= 1:
-                print(f"❌ Evaluation failed: {e}")
+                print(f"ERROR: Evaluation failed: {e}")
             return 1
 
 
@@ -597,14 +597,14 @@ def main():
     # Test FFmpeg availability (warn but don't fail)
     if not test_ffmpeg_availability():
         if args.verbose >= 1:
-            print("⚠️ FFmpeg not found. Running in mock mode for testing.")
+            print("WARNING: FFmpeg not found. Running in mock mode for testing.")
             print("   For production use, please install FFmpeg and ensure it's in PATH.")
 
     try:
         # Load configuration
         config = load_config(args.config)
         if args.verbose >= 2:
-            print(f"📋 Configuration loaded from: {args.config}")
+            print(f">> Configuration loaded from: {args.config}")
 
         # Create evaluator
         evaluator = ContinuousEvaluator(config, args)
@@ -614,7 +614,7 @@ def main():
 
     except Exception as e:
         if args.verbose >= 1:
-            print(f"❌ Failed to start evaluator: {e}")
+            print(f"ERROR: Failed to start evaluator: {e}")
         if args.verbose >= 2:
             import traceback
             traceback.print_exc()

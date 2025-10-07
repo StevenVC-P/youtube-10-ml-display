@@ -99,11 +99,11 @@ class TimedCheckpointCallback(BaseCallback):
             
             if self.verbose > 0:
                 mtime = datetime.fromtimestamp(latest_path.stat().st_mtime)
-                print(f"💾 Checkpoint saved: {latest_path.absolute()} (mtime: {mtime})")
-                print(f"📁 Backup created: {backup_path.name}")
+                print(f">> Checkpoint saved: {latest_path.absolute()} (mtime: {mtime})")
+                print(f">> Backup created: {backup_path.name}")
                 
         except Exception as e:
-            print(f"❌ Error saving checkpoint: {e}")
+            print(f"ERROR: Error saving checkpoint: {e}")
     
     def _cleanup_old_checkpoints(self):
         """Remove old checkpoint backups, keeping only the most recent ones"""
@@ -137,7 +137,7 @@ class TrainingStatsCallback(BaseCallback):
     def _on_training_start(self) -> None:
         self.start_time = time.time()
         if self.verbose > 0:
-            print(f"🏁 Training started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f">> Training started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     def _on_step(self) -> bool:
         if self.n_calls % self.log_every_steps == 0:
@@ -162,7 +162,7 @@ def setup_tensorboard_logging(config: Dict[str, Any]) -> str:
     run_name = f"run_{timestamp}"
     run_path = tb_log_path / run_name
     
-    print(f"📈 TensorBoard logs: {run_path.absolute()}")
+    print(f">> TensorBoard logs: {run_path.absolute()}")
     return str(run_path)
 
 
@@ -198,22 +198,22 @@ def train_agent(
     n_envs = train_config.get('vec_envs', 8)
     
     if verbose > 0:
-        print(f"🌍 Creating {n_envs} vectorized environments...")
-    
+        print(f">> Creating {n_envs} vectorized environments...")
+
     vec_env = make_vec_env(
         config=config,
         n_envs=n_envs,
         seed=config.get('seed', 42)
     )
-    
+
     # Get environment info
     env_info = get_env_info(config)
     if verbose > 0:
-        print(f"🎮 Environment Info:")
-        print(f"  • Environment: {env_info['env_id']}")
-        print(f"  • Observation shape: {env_info['observation_shape']}")
-        print(f"  • Action space: {env_info['action_space']}")
-        print(f"  • Number of actions: {env_info['n_actions']}")
+        print(f">> Environment Info:")
+        print(f"  - Environment: {env_info['env_id']}")
+        print(f"  - Observation shape: {env_info['observation_shape']}")
+        print(f"  - Action space: {env_info['action_space']}")
+        print(f"  - Number of actions: {env_info['n_actions']}")
     
     # Create algorithm
     if verbose > 0:
@@ -281,8 +281,8 @@ def train_agent(
     callback_list = CallbackList(callbacks)
 
     if verbose > 0:
-        print(f"🚀 Starting training for {total_timesteps:,} timesteps...")
-        print(f"💾 Checkpoints will be saved to: {models_path.absolute()}")
+        print(f">> Starting training for {total_timesteps:,} timesteps...")
+        print(f">> Checkpoints will be saved to: {models_path.absolute()}")
         print("=" * 60)
     
     # Start training
@@ -304,10 +304,10 @@ def train_agent(
         elapsed = time.time() - start_time
         if verbose > 0:
             print("=" * 60)
-            print(f"✅ Training completed!")
-            print(f"⏱️  Total time: {elapsed:.1f} seconds")
-            print(f"💾 Final checkpoint: {final_path.absolute()}")
-            print(f"📈 TensorBoard logs: {tb_log_path}")
+            print(f">> Training completed!")
+            print(f">> Total time: {elapsed:.1f} seconds")
+            print(f">> Final checkpoint: {final_path.absolute()}")
+            print(f">> TensorBoard logs: {tb_log_path}")
         
         return str(final_path)
         
@@ -320,7 +320,7 @@ def train_agent(
         algo.save(str(final_path))
         
         if verbose > 0:
-            print(f"💾 Final checkpoint saved: {final_path.absolute()}")
+            print(f">> Final checkpoint saved: {final_path.absolute()}")
         
         return str(final_path)
         
@@ -356,9 +356,9 @@ def main():
     try:
         config = load_config(args.config)
     except Exception as e:
-        print(f"❌ Error loading config: {e}")
+        print(f"ERROR: Error loading config: {e}")
         sys.exit(1)
-    
+
     # Start training
     try:
         checkpoint_path = train_agent(
@@ -366,10 +366,10 @@ def main():
             dryrun_seconds=args.dryrun_seconds,
             verbose=args.verbose
         )
-        print(f"\n🎯 Training complete! Checkpoint: {checkpoint_path}")
-        
+        print(f"\n>> Training complete! Checkpoint: {checkpoint_path}")
+
     except Exception as e:
-        print(f"❌ Training failed: {e}")
+        print(f"ERROR: Training failed: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
