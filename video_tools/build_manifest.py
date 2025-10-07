@@ -326,7 +326,7 @@ def main():
     
     args = parser.parse_args()
     
-    print("🎬 Video Manifest Builder - Sprint 6")
+    print("Video Manifest Builder - Sprint 6")
     print("=" * 50)
     
     try:
@@ -336,11 +336,11 @@ def main():
             builder = VideoManifestBuilder(load_config())
             builder.print_summary(videos)
         
-        print("\n✅ Manifest building complete!")
+        print("\nManifest building complete!")
         return 0
         
     except Exception as e:
-        print(f"❌ Manifest building failed: {e}")
+        print(f"Manifest building failed: {e}")
         return 1
 
 

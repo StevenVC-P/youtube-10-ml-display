@@ -34,7 +34,7 @@ class SupercutRenderer:
         self.target_hours = self.render_config.get('target_hours', 10)
         self.add_titles = self.render_config.get('add_titles', True)
         
-        print(f"🎬 Supercut Renderer initialized")
+        print(f"Supercut Renderer initialized")
         print(f"   Target duration: {self.target_hours} hours")
         print(f"   Add titles: {self.add_titles}")
     
@@ -56,10 +56,10 @@ class SupercutRenderer:
         videos = []
         
         if not Path(manifest_path).exists():
-            print(f"❌ Manifest file not found: {manifest_path}")
+            print(f"Manifest file not found: {manifest_path}")
             return videos
-        
-        print(f"📋 Loading manifest: {manifest_path}")
+
+        print(f"Loading manifest: {manifest_path}")
         
         with open(manifest_path, 'r', encoding='utf-8') as csvfile:
             reader = csv.DictReader(csvfile)
@@ -169,7 +169,7 @@ class SupercutRenderer:
             for clip in clips:
                 filepath = clip['filepath']
                 if not Path(filepath).exists():
-                    print(f"⚠️ Clip not found: {filepath}")
+                    print(f"Warning: Clip not found: {filepath}")
                     continue
                 
                 # Use absolute path
@@ -180,10 +180,10 @@ class SupercutRenderer:
     
     def render_supercut_basic(self, clips: List[Dict], output_path: str, music_path: Optional[str] = None) -> bool:
         """Render basic supercut by concatenating clips."""
-        print("🎬 Rendering basic supercut...")
+        print("Rendering basic supercut...")
         
         if not clips:
-            print("❌ No clips to render")
+            print("No clips to render")
             return False
         
         # Create clip list file
@@ -233,20 +233,20 @@ class SupercutRenderer:
             
             if result.returncode == 0:
                 output_size = Path(output_path).stat().st_size / 1024 / 1024
-                print(f"✅ Supercut rendering successful!")
+                print(f"Supercut rendering successful!")
                 print(f"   Duration: {elapsed:.1f} seconds")
                 print(f"   Output size: {output_size:.1f} MB")
                 return True
             else:
-                print(f"❌ FFmpeg failed with return code {result.returncode}")
+                print(f"FFmpeg failed with return code {result.returncode}")
                 print(f"   Error: {result.stderr}")
                 return False
-                
+
         except subprocess.TimeoutExpired:
-            print("❌ FFmpeg timeout (2 hours)")
+            print("FFmpeg timeout (2 hours)")
             return False
         except Exception as e:
-            print(f"❌ Rendering error: {e}")
+            print(f"Rendering error: {e}")
             return False
         finally:
             # Clean up temporary file
@@ -257,17 +257,17 @@ class SupercutRenderer:
     
     def render_supercut_with_titles(self, clips: List[Dict], output_path: str, music_path: Optional[str] = None) -> bool:
         """Render supercut with title cards between sections."""
-        print("🎬 Rendering supercut with titles...")
+        print("Rendering supercut with titles...")
         
         # For now, fall back to basic rendering
         # TODO: Implement title card generation
-        print("⚠️ Title card generation not yet implemented, using basic rendering")
+        print("Warning: Title card generation not yet implemented, using basic rendering")
         return self.render_supercut_basic(clips, output_path, music_path)
     
     def render_supercut(self, manifest_path: str, output_path: str, 
                        target_hours: Optional[float] = None, music_path: Optional[str] = None) -> bool:
         """Main supercut rendering method."""
-        print(f"🎬 Starting supercut rendering")
+        print(f"Starting supercut rendering")
         print(f"   Manifest: {manifest_path}")
         print(f"   Output: {output_path}")
         
@@ -279,19 +279,19 @@ class SupercutRenderer:
         
         # Check FFmpeg availability
         if not self.test_ffmpeg_availability():
-            print("❌ FFmpeg not available")
+            print("FFmpeg not available")
             return False
-        
+
         # Load manifest
         videos = self.load_manifest(manifest_path)
         if not videos:
-            print("❌ No videos in manifest")
+            print("No videos in manifest")
             return False
-        
+
         # Select clips for supercut
         selected_clips = self.select_clips_for_supercut(videos, target_hours)
         if not selected_clips:
-            print("❌ No clips selected")
+            print("No clips selected")
             return False
         
         # Create output directory if needed
@@ -338,7 +338,7 @@ def main():
     
     args = parser.parse_args()
     
-    print("🎬 Supercut Renderer - Sprint 6")
+    print("Supercut Renderer - Sprint 6")
     print("=" * 50)
     
     try:
@@ -355,14 +355,14 @@ def main():
         )
         
         if success:
-            print("\n✅ Supercut rendering complete!")
+            print("\nSupercut rendering complete!")
             return 0
         else:
-            print("\n❌ Supercut rendering failed!")
+            print("\nSupercut rendering failed!")
             return 1
-        
+
     except Exception as e:
-        print(f"❌ Rendering failed: {e}")
+        print(f"Rendering failed: {e}")
         return 1
 
 

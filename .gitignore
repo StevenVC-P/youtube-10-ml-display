@@ -96,18 +96,19 @@ run_tests.py
 test_env_to_file.py
 SPRINT1_STATUS.md
 
-# Sprint 5 test files (temporary)
-test_ffmpeg_only.py
-test_lightweight_sprint5.py
-test_sprint5_lightweight.py
-test_sprint5_minimal.py
-test_10_hour_setup.py
-test_simple_10_hour.py
-stream_real_gameplay.py
-create_training_video_demo.py
-preflight_check.py
-start_10_hour_training.py
-run_10_hour_training.py
+# Test and development files (temporary)
+test_*.py
+debug_*.py
+check_*.py
+validate_*.py
+run_*.py
+start_*.py
+*_test.py
+*_debug.py
+*_STATUS.md
+*_DRAFT.md
+CLEANUP_*.md
+segment_*.mp4
 
 # FFmpeg (if downloaded locally)
 ffmpeg.exe
