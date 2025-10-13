@@ -113,7 +113,7 @@ def load_model(checkpoint_path: str, config: Dict[str, Any], verbose: int = 1) -
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     
     if verbose >= 1:
-        print(f"📂 Loading checkpoint: {checkpoint_path}")
+        print(f"[Load] Loading checkpoint: {checkpoint_path}")
     
     # Determine algorithm type from config
     algo_type = config['train']['algo'].lower()
@@ -127,7 +127,7 @@ def load_model(checkpoint_path: str, config: Dict[str, Any], verbose: int = 1) -
             raise ValueError(f"Unsupported algorithm: {algo_type}")
         
         if verbose >= 1:
-            print(f"✅ Model loaded successfully ({algo_type.upper()})")
+            print(f"OK Model loaded successfully ({algo_type.upper()})")
             
         return model
         
@@ -158,7 +158,7 @@ def create_eval_environment(
         os.makedirs(output_dir, exist_ok=True)
         
         if verbose >= 1:
-            print(f"📹 Video recording enabled: {output_dir}")
+            print(f"[Video] Video recording enabled: {output_dir}")
         
         # Create environment with video recording
         env = make_eval_env(
@@ -171,7 +171,7 @@ def create_eval_environment(
         return env, output_dir
     else:
         if verbose >= 1:
-            print("🚫 Video recording disabled")
+            print("Disabled Video recording disabled")
         
         # Create environment without video recording
         env = make_eval_env(
@@ -206,10 +206,10 @@ def evaluate_model(
         Dictionary with evaluation results
     """
     if verbose >= 1:
-        print(f"🎮 Starting evaluation:")
-        print(f"  • Episodes: {episodes}")
-        print(f"  • Max time: {max_seconds}s" if max_seconds > 0 else "  • Max time: unlimited")
-        print(f"  • Deterministic: {deterministic}")
+        print(f"[Evaluation] Starting evaluation:")
+        print(f"  - Episodes: {episodes}")
+        print(f"  - Max time: {max_seconds}s" if max_seconds > 0 else "  - Max time: unlimited")
+        print(f"  - Deterministic: {deterministic}")
     
     start_time = time.time()
     episode_rewards = []
@@ -221,7 +221,7 @@ def evaluate_model(
             # Check time limit
             if max_seconds > 0 and (time.time() - start_time) > max_seconds:
                 if verbose >= 1:
-                    print(f"⏰ Time limit reached ({max_seconds}s)")
+                    print(f"[Timer] Time limit reached ({max_seconds}s)")
                 break
             
             # Reset environment
@@ -231,14 +231,14 @@ def evaluate_model(
             done = False
             
             if verbose >= 2:
-                print(f"🎯 Episode {episode + 1}/{episodes} started")
+                print(f"[Milestone] Episode {episode + 1}/{episodes} started")
             
             # Run episode
             while not done:
                 # Check time limit during episode
                 if max_seconds > 0 and (time.time() - start_time) > max_seconds:
                     if verbose >= 1:
-                        print(f"⏰ Time limit reached during episode {episode + 1}")
+                        print(f"[Timer] Time limit reached during episode {episode + 1}")
                     break
                 
                 # Get action from model
@@ -257,11 +257,11 @@ def evaluate_model(
             episodes_completed += 1
             
             if verbose >= 1:
-                print(f"📊 Episode {episode + 1}: Reward={episode_reward:.2f}, Length={episode_length}")
+                print(f"[Stats] Episode {episode + 1}: Reward={episode_reward:.2f}, Length={episode_length}")
     
     except KeyboardInterrupt:
         if verbose >= 1:
-            print("\n⚠️ Evaluation interrupted by user")
+            print("\nWarning Evaluation interrupted by user")
     
     finally:
         env.close()
@@ -291,7 +291,7 @@ def print_results(results: Dict[str, Any], video_dir: Optional[str] = None, verb
         return
     
     print("\n" + "=" * 60)
-    print("📈 EVALUATION RESULTS")
+    print("[Totals] EVALUATION RESULTS")
     print("=" * 60)
     
     print(f"Episodes completed: {results['episodes_completed']}")
@@ -301,22 +301,22 @@ def print_results(results: Dict[str, Any], video_dir: Optional[str] = None, verb
     
     if results['episodes_completed'] > 0:
         print(f"\nPer-episode statistics:")
-        print(f"  • Mean reward: {results['mean_reward']:.2f} ± {results['std_reward']:.2f}")
-        print(f"  • Mean length: {results['mean_length']:.1f} ± {results['std_length']:.1f}")
+        print(f"  - Mean reward: {results['mean_reward']:.2f} +/- {results['std_reward']:.2f}")
+        print(f"  - Mean length: {results['mean_length']:.1f} +/- {results['std_length']:.1f}")
         
         if results['episodes_completed'] > 1:
-            print(f"  • Min reward: {min(results['episode_rewards']):.2f}")
-            print(f"  • Max reward: {max(results['episode_rewards']):.2f}")
+            print(f"  - Min reward: {min(results['episode_rewards']):.2f}")
+            print(f"  - Max reward: {max(results['episode_rewards']):.2f}")
     
     if video_dir and os.path.exists(video_dir):
         video_files = [f for f in os.listdir(video_dir) if f.endswith('.mp4')]
         if video_files:
-            print(f"\n🎬 Videos saved:")
+            print(f"\n[Video] Videos saved:")
             for video_file in sorted(video_files):
                 video_path = os.path.join(video_dir, video_file)
-                print(f"  • {os.path.abspath(video_path)}")
+                print(f"  - {os.path.abspath(video_path)}")
         else:
-            print(f"\n⚠️ No video files found in {video_dir}")
+            print(f"\nWarning No video files found in {video_dir}")
     
     print("=" * 60)
 
@@ -333,7 +333,7 @@ def main():
         # Load configuration
         config = load_config(args.config)
         if args.verbose >= 2:
-            print(f"📋 Configuration loaded from: {args.config}")
+            print(f"[Manifest] Configuration loaded from: {args.config}")
 
         # Determine output directory
         output_dir = args.output_dir
@@ -373,7 +373,7 @@ def main():
 
     except Exception as e:
         if args.verbose >= 1:
-            print(f"\n❌ Evaluation failed: {e}")
+            print(f"\nERROR Evaluation failed: {e}")
         if args.verbose >= 2:
             import traceback
             traceback.print_exc()

@@ -2,11 +2,11 @@ project_name: "youtube-10-ml-display"
 seed: 42
 
 paths:
-  videos_milestones: "video/milestones"
+  videos_milestones: "games\breakout\epic_003_perfect_play\videos/individual_hours"
   videos_eval: "video/eval"
   videos_parts: "video/render/parts"
-  logs_tb: "logs/tb"
-  models: "models/checkpoints"
+  logs_tb: "games\breakout\epic_003_perfect_play\logs/tensorboard"
+  models: "games\breakout\epic_003_perfect_play\models/checkpoints"
   ffmpeg_path: "C:\\Users\\steve\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.0-full_build\\bin\\ffmpeg.exe"
 
 game:
@@ -72,3 +72,9 @@ video_tools:
     clip_selection_strategy: "intelligent" # "intelligent", "chronological", "random"
     max_clips: 100
     transition_duration: 0.5
+
+
+# Epic Continuity
+epic:
+  load_previous_model: "games\breakout\epic_002_advanced_mastery\models\final\epic_002_final_model.zip"
+  epic_number: 3

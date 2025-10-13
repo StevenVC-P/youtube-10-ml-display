@@ -1,0 +1,26 @@
+{
+  "epic_name": "Epic 001: From Scratch",
+  "game": "Breakout",
+  "description": "Complete 10-hour neural network learning journey from random play to mastery",
+  "start_date": "2025-10-10",
+  "completion_date": "2025-10-11",
+  "total_timesteps": 10000000,
+  "final_performance": {
+    "average_episode_reward": 22.8,
+    "episode_length_mean": 380
+  },
+  "video_info": {
+    "individual_hours": 10,
+    "merged_epic_duration": "10:00:00",
+    "merged_epic_size_mb": 811.9,
+    "resolution": "960x540",
+    "fps": 30
+  },
+  "training_info": {
+    "algorithm": "PPO",
+    "policy": "CnnPolicy",
+    "learning_rate": 0.00025,
+    "total_training_time_hours": 13.45,
+    "environment": "BreakoutNoFrameskip-v4"
+  }
+}

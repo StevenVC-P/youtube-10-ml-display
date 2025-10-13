@@ -8,12 +8,15 @@ This module provides callbacks for Stable-Baselines3 training that:
 """
 
 import os
+import queue
+import threading
 import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 import numpy as np
 import gymnasium as gym
+from stable_baselines3 import PPO, DQN
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnv
 from gymnasium.wrappers import RecordVideo
@@ -24,12 +27,11 @@ from envs.make_env import make_eval_env
 class MilestoneVideoCallback(BaseCallback):
     """
     Callback that records milestone videos at specific training progress percentages.
-    
-    Records short video clips when the training crosses predefined milestone thresholds
-    (e.g., 1%, 5%, 10%, etc. of total training steps). Videos are saved with descriptive
-    filenames including the global step and percentage milestone.
+
+    Videos are produced asynchronously so the learner is not blocked while clips
+    are rendered from a saved policy checkpoint.
     """
-    
+
     def __init__(
         self,
         config: Dict[str, Any],
@@ -40,7 +42,7 @@ class MilestoneVideoCallback(BaseCallback):
     ):
         """
         Initialize the milestone video callback.
-        
+
         Args:
             config: Full configuration dictionary
             milestones_pct: List of percentage milestones (e.g., [1, 5, 10, 20])
@@ -64,18 +66,29 @@ class MilestoneVideoCallback(BaseCallback):
         
         # Track which milestones have been recorded
         self.recorded_milestones = set()
+        self.pending_jobs = queue.Queue()
+        self.stop_event = threading.Event()
+        self.worker_thread = threading.Thread(
+            target=self._worker_loop,
+            name="milestone_recorder",
+            daemon=True
+        )
+        self.worker_thread.start()
+        self.algo_name = config['train']['algo'].lower()
         
         # Setup output directory
         self.output_dir = Path(config['paths']['videos_milestones'])
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.snapshot_dir = Path(config['paths']['models']) / "milestone_snapshots"
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         
         if self.verbose >= 1:
-            print(f"🎬 MilestoneVideoCallback initialized:")
-            print(f"  • Output directory: {self.output_dir.absolute()}")
-            print(f"  • Total timesteps: {self.total_timesteps:,}")
-            print(f"  • Milestone percentages: {self.milestones_pct}")
-            print(f"  • Milestone steps: {[f'{s:,}' for s in self.milestone_steps]}")
-            print(f"  • Clip duration: {self.clip_seconds}s @ {self.fps} FPS")
+            print(f"[Video] MilestoneVideoCallback initialized:")
+            print(f"  - Output directory: {self.output_dir.absolute()}")
+            print(f"  - Total timesteps: {self.total_timesteps:,}")
+            print(f"  - Milestone percentages: {self.milestones_pct}")
+            print(f"  - Milestone steps: {[f'{s:,}' for s in self.milestone_steps]}")
+            print(f"  - Clip duration: {self.clip_seconds}s @ {self.fps} FPS")
     
     def _on_step(self) -> bool:
         """
@@ -89,29 +102,84 @@ class MilestoneVideoCallback(BaseCallback):
         # Check if we've crossed any new milestone thresholds
         for i, (pct, milestone_step) in enumerate(zip(self.milestones_pct, self.milestone_steps)):
             if current_step >= milestone_step and pct not in self.recorded_milestones:
-                self._record_milestone_video(current_step, pct)
-                self.recorded_milestones.add(pct)
-                
-                if self.verbose >= 1:
-                    print(f"📹 Milestone {pct}% recorded at step {current_step:,}")
+                snapshot_path = self._create_model_snapshot(current_step, pct)
+                if snapshot_path is not None:
+                    self.pending_jobs.put({
+                        "current_step": current_step,
+                        "milestone_pct": pct,
+                        "checkpoint_path": snapshot_path
+                    })
+                    self.recorded_milestones.add(pct)
+                    
+                    if self.verbose >= 1:
+                        print(f"[Video] Milestone {pct}% scheduled at step {current_step:,}")
         
         return True
     
-    def _record_milestone_video(self, current_step: int, milestone_pct: float) -> None:
+    def _create_model_snapshot(self, current_step: int, milestone_pct: float) -> Optional[Path]:
+        """Save a temporary checkpoint for asynchronous video recording."""
+        try:
+            timestamp = int(time.time())
+            snapshot_path = self.snapshot_dir / f"milestone_step_{current_step:08d}_{milestone_pct:g}_{timestamp}.zip"
+            self.model.save(str(snapshot_path))
+            return snapshot_path
+        except Exception as err:
+            if self.verbose >= 1:
+                print(f"ERROR: Failed to save snapshot for milestone {milestone_pct}%: {err}")
+            return None
+    
+    def _worker_loop(self) -> None:
+        """Background worker that renders milestone clips."""
+        while True:
+            try:
+                job = self.pending_jobs.get(timeout=0.5)
+            except queue.Empty:
+                if self.stop_event.is_set():
+                    break
+                continue
+            
+            try:
+                self._record_milestone_video(**job)
+            except Exception as err:
+                if self.verbose >= 1:
+                    print(f"ERROR: Milestone video worker failed: {err}")
+            finally:
+                checkpoint_path = job.get("checkpoint_path")
+                if checkpoint_path and isinstance(checkpoint_path, Path) and checkpoint_path.exists():
+                    try:
+                        checkpoint_path.unlink()
+                    except Exception:
+                        if self.verbose >= 2:
+                            print(f"Warning: Could not delete snapshot {checkpoint_path}")
+                self.pending_jobs.task_done()
+    
+    def _record_milestone_video(
+        self,
+        current_step: int,
+        milestone_pct: float,
+        checkpoint_path: Path
+    ) -> None:
         """
         Record a milestone video clip.
         
         Args:
             current_step: Current training step
             milestone_pct: Milestone percentage (e.g., 1.0 for 1%)
+            checkpoint_path: Path to the saved policy snapshot
         """
         try:
+            model = self._load_model(checkpoint_path)
+            if model is None:
+                if self.verbose >= 1:
+                    print(f"Warning: Skipping milestone {milestone_pct}% (model load failed)")
+                return
+            
             # Create filename with step and percentage
             filename = f"step_{current_step:08d}_pct_{milestone_pct:g}"
             video_path = self.output_dir / filename
             
             if self.verbose >= 2:
-                print(f"🎥 Recording milestone video: {filename}")
+                print(f"[Video] Recording milestone video: {filename}")
             
             # Create evaluation environment with video recording
             eval_env = self._create_recording_env(video_path)
@@ -130,8 +198,8 @@ class MilestoneVideoCallback(BaseCallback):
                 done = False
                 
                 while not done and frames_recorded < target_frames:
-                    # Use current model to predict action
-                    action, _ = self.model.predict(obs, deterministic=True)
+                    # Use snapshot model to predict action
+                    action, _ = model.predict(obs, deterministic=True)
                     obs, reward, terminated, truncated, info = eval_env.step(action)
                     done = terminated or truncated
                     
@@ -141,21 +209,38 @@ class MilestoneVideoCallback(BaseCallback):
                 episodes_completed += 1
             
             eval_env.close()
+            model.env = None  # Help GC
             
             # Log recording results
             duration = time.time() - start_time
             actual_seconds = frames_recorded / self.fps
             
             if self.verbose >= 1:
-                print(f"✅ Milestone {milestone_pct}% video saved:")
-                print(f"  • File: {video_path}.mp4")
-                print(f"  • Duration: {actual_seconds:.1f}s ({frames_recorded} frames)")
-                print(f"  • Episodes: {episodes_completed}")
-                print(f"  • Recording time: {duration:.1f}s")
+                print(f"OK Milestone {milestone_pct}% video saved:")
+                print(f"  - File: {video_path}.mp4")
+                print(f"  - Duration: {actual_seconds:.1f}s ({frames_recorded} frames)")
+                print(f"  - Episodes: {episodes_completed}")
+                print(f"  - Recording time: {duration:.1f}s")
         
         except Exception as e:
             if self.verbose >= 1:
-                print(f"❌ Failed to record milestone {milestone_pct}% video: {e}")
+                print(f"ERROR Failed to record milestone {milestone_pct}% video: {e}")
+    
+    def _load_model(self, checkpoint_path: Path):
+        """Load a model snapshot based on configured algorithm."""
+        algo = self.algo_name
+        device = "cpu"
+        
+        try:
+            if algo == "ppo":
+                return PPO.load(str(checkpoint_path), device=device)
+            if algo == "dqn":
+                return DQN.load(str(checkpoint_path), device=device)
+            raise ValueError(f"Unsupported algorithm for milestone recording: {algo}")
+        except Exception as err:
+            if self.verbose >= 1:
+                print(f"ERROR: Could not load snapshot {checkpoint_path}: {err}")
+            return None
     
     def _create_recording_env(self, video_path: Path) -> gym.Env:
         """
@@ -192,6 +277,15 @@ class MilestoneVideoCallback(BaseCallback):
         )
 
         return recording_env
+    
+    def _on_training_end(self) -> None:
+        """Ensure background jobs finish before training fully exits."""
+        self.pending_jobs.join()
+        self.stop_event.set()
+        if self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=30)
+        if self.verbose >= 2:
+            print("[Video] Milestone recorder thread stopped")
 
 
 class TrainingProgressCallback(BaseCallback):
@@ -232,7 +326,7 @@ class TrainingProgressCallback(BaseCallback):
         """Called when training starts."""
         self.start_time = time.time()
         if self.verbose >= 1:
-            print(f"🚀 Training started - Target: {self.total_timesteps:,} timesteps")
+            print(f"[Start] Training started - Target: {self.total_timesteps:,} timesteps")
     
     def _on_step(self) -> bool:
         """Called after each training step."""
@@ -266,7 +360,7 @@ class TrainingProgressCallback(BaseCallback):
             eta_hours = eta_seconds / 3600
             
             if self.verbose >= 1:
-                print(f"📊 Progress: {current_step:,}/{self.total_timesteps:,} "
+                print(f"[Stats] Progress: {current_step:,}/{self.total_timesteps:,} "
                       f"({progress_pct:.1f}%) | "
                       f"Speed: {steps_per_sec:.0f} steps/s | "
                       f"ETA: {eta_hours:.1f}h")
@@ -274,4 +368,4 @@ class TrainingProgressCallback(BaseCallback):
     def _log_milestone_crossing(self, current_step: int, milestone_pct: float) -> None:
         """Log milestone crossing."""
         if self.verbose >= 1:
-            print(f"🎯 Milestone reached: {milestone_pct}% at step {current_step:,}")
+            print(f"[Milestone] Milestone reached: {milestone_pct}% at step {current_step:,}")

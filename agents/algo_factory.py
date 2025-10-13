@@ -45,18 +45,24 @@ def print_system_info():
 def create_algo(config: Dict[str, Any], vec_env: VecEnv, tensorboard_log: str = None) -> Union[PPO, DQN]:
     """
     Create and configure RL algorithm based on config.
-    
+    Supports loading from previous epic models for continuity.
+
     Args:
         config: Configuration dictionary
         vec_env: Vectorized environment
         tensorboard_log: Path for TensorBoard logging
-        
+
     Returns:
         Configured RL algorithm (PPO or DQN)
     """
     train_config = config['train']
     algo_name = train_config['algo'].lower()
-    
+
+    # Check for epic continuity
+    epic_config = config.get('epic', {})
+    previous_model_path = epic_config.get('load_previous_model')
+    epic_number = epic_config.get('epic_number', 1)
+
     # Common parameters
     common_params = {
         'env': vec_env,
@@ -64,13 +70,40 @@ def create_algo(config: Dict[str, Any], vec_env: VecEnv, tensorboard_log: str = 
         'seed': config.get('seed', 42),
         'device': 'cuda' if torch.cuda.is_available() else 'cpu'
     }
-    
+
+    # Create algorithm
     if algo_name == 'ppo':
-        return create_ppo(train_config, **common_params)
+        algo = create_ppo(train_config, **common_params)
     elif algo_name == 'dqn':
-        return create_dqn(train_config, **common_params)
+        algo = create_dqn(train_config, **common_params)
     else:
         raise ValueError(f"Unsupported algorithm: {algo_name}")
+
+    # Load previous model if specified (epic continuity)
+    if previous_model_path and os.path.exists(previous_model_path):
+        print(f"🔗 [Epic Continuity] Loading previous model from Epic {epic_number-1}")
+        print(f"📁 Model path: {previous_model_path}")
+        try:
+            # Load the previous model
+            if algo_name == 'ppo':
+                previous_algo = PPO.load(previous_model_path, env=vec_env)
+            elif algo_name == 'dqn':
+                previous_algo = DQN.load(previous_model_path, env=vec_env)
+
+            # Copy the learned parameters to the new algorithm
+            algo.set_parameters(previous_algo.get_parameters())
+
+            print(f"✅ [Epic Continuity] Successfully loaded previous model!")
+            print(f"🚀 [Epic Continuity] Training will continue from previous epic's performance level")
+
+        except Exception as e:
+            print(f"⚠️  [Epic Continuity] Failed to load previous model: {e}")
+            print(f"🔄 [Epic Continuity] Starting from scratch instead")
+    elif previous_model_path:
+        print(f"⚠️  [Epic Continuity] Previous model not found: {previous_model_path}")
+        print(f"🔄 [Epic Continuity] Starting from scratch")
+
+    return algo
 
 
 def create_ppo(train_config: Dict[str, Any], **kwargs) -> PPO:
@@ -106,13 +139,13 @@ def create_ppo(train_config: Dict[str, Any], **kwargs) -> PPO:
     # Merge with common parameters
     ppo_params.update(kwargs)
     
-    print(f"🤖 Creating PPO Algorithm:")
-    print(f"  • Policy: {ppo_params['policy']}")
-    print(f"  • Learning Rate: {ppo_params['learning_rate']}")
-    print(f"  • N Steps: {ppo_params['n_steps']}")
-    print(f"  • Batch Size: {ppo_params['batch_size']}")
-    print(f"  • Gamma: {ppo_params['gamma']}")
-    print(f"  • Device: {ppo_params['device']}")
+    print(f"[Agent] Creating PPO Algorithm:")
+    print(f"  - Policy: {ppo_params['policy']}")
+    print(f"  - Learning Rate: {ppo_params['learning_rate']}")
+    print(f"  - N Steps: {ppo_params['n_steps']}")
+    print(f"  - Batch Size: {ppo_params['batch_size']}")
+    print(f"  - Gamma: {ppo_params['gamma']}")
+    print(f"  - Device: {ppo_params['device']}")
     
     return PPO(**ppo_params)
 
@@ -151,12 +184,12 @@ def create_dqn(train_config: Dict[str, Any], **kwargs) -> DQN:
     # Merge with common parameters
     dqn_params.update(kwargs)
     
-    print(f"🤖 Creating DQN Algorithm:")
-    print(f"  • Policy: {dqn_params['policy']}")
-    print(f"  • Learning Rate: {dqn_params['learning_rate']}")
-    print(f"  • Buffer Size: {dqn_params['buffer_size']}")
-    print(f"  • Batch Size: {dqn_params['batch_size']}")
-    print(f"  • Device: {dqn_params['device']}")
+    print(f"[Agent] Creating DQN Algorithm:")
+    print(f"  - Policy: {dqn_params['policy']}")
+    print(f"  - Learning Rate: {dqn_params['learning_rate']}")
+    print(f"  - Buffer Size: {dqn_params['buffer_size']}")
+    print(f"  - Batch Size: {dqn_params['batch_size']}")
+    print(f"  - Device: {dqn_params['device']}")
     
     return DQN(**dqn_params)
 
@@ -229,6 +262,6 @@ if __name__ == "__main__":
         print("\n>> Algorithm factory test completed successfully!")
 
     except Exception as e:
-        print(f"\n❌ Test failed: {e}")
+        print(f"\nERROR Test failed: {e}")
         import traceback
         traceback.print_exc()

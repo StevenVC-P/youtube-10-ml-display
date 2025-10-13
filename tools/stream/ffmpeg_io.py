@@ -36,7 +36,7 @@ class FFmpegWriter:
         codec: str = "libx264",
         pixel_format: str = "yuv420p",
         segment_time: Optional[int] = None,
-        ffmpeg_path: str = "ffmpeg",
+        ffmpeg_path: Optional[str] = None,
         verbose: bool = True,
         mock_mode: bool = False
     ):
@@ -66,7 +66,7 @@ class FFmpegWriter:
         self.codec = codec
         self.pixel_format = pixel_format
         self.segment_time = segment_time
-        self.ffmpeg_path = ffmpeg_path
+        self.ffmpeg_path = ffmpeg_path or "ffmpeg"
         self.verbose = verbose
         self.mock_mode = mock_mode
 
@@ -130,25 +130,25 @@ class FFmpegWriter:
         """
         if self.is_running:
             if self.verbose:
-                print("⚠️ FFmpeg process already running")
+                print("Warning FFmpeg process already running")
             return False
 
         # Mock mode for testing
         if self.mock_mode:
             if self.verbose:
-                print(f"🧪 Starting mock FFmpeg mode:")
-                print(f"  • Resolution: {self.width}x{self.height}")
-                print(f"  • FPS: {self.fps}")
-                print(f"  • Output: {self.output_path} (mock)")
+                print(f"[Test] Starting mock FFmpeg mode:")
+                print(f"  - Resolution: {self.width}x{self.height}")
+                print(f"  - FPS: {self.fps}")
+                print(f"  - Output: {self.output_path} (mock)")
                 if self.segment_time:
-                    print(f"  • Segment time: {self.segment_time}s (mock)")
+                    print(f"  - Segment time: {self.segment_time}s (mock)")
 
             self.is_running = True
             self.start_time = time.time()
             self.frames_written = 0
 
             if self.verbose:
-                print("✅ Mock FFmpeg mode started successfully")
+                print("OK Mock FFmpeg mode started successfully")
 
             return True
 
@@ -156,13 +156,13 @@ class FFmpegWriter:
             cmd = self._build_ffmpeg_command()
 
             if self.verbose:
-                print(f"🎬 Starting FFmpeg process:")
-                print(f"  • Command: {' '.join(cmd[:10])}...")
-                print(f"  • Resolution: {self.width}x{self.height}")
-                print(f"  • FPS: {self.fps}")
-                print(f"  • Output: {self.output_path}")
+                print(f"[Video] Starting FFmpeg process:")
+                print(f"  - Command: {' '.join(cmd[:10])}...")
+                print(f"  - Resolution: {self.width}x{self.height}")
+                print(f"  - FPS: {self.fps}")
+                print(f"  - Output: {self.output_path}")
                 if self.segment_time:
-                    print(f"  • Segment time: {self.segment_time}s")
+                    print(f"  - Segment time: {self.segment_time}s")
 
             # Start FFmpeg process
             self.process = subprocess.Popen(
@@ -185,13 +185,13 @@ class FFmpegWriter:
             self.frames_written = 0
 
             if self.verbose:
-                print("✅ FFmpeg process started successfully")
+                print("OK FFmpeg process started successfully")
 
             return True
 
         except Exception as e:
             if self.verbose:
-                print(f"❌ Failed to start FFmpeg: {e}")
+                print(f"ERROR Failed to start FFmpeg: {e}")
             return False
     
     def _monitor_errors(self):
@@ -208,10 +208,10 @@ class FFmpegWriter:
                     # Log critical errors
                     if any(keyword in error_msg.lower() for keyword in ['error', 'failed', 'invalid']):
                         if self.verbose:
-                            print(f"🚨 FFmpeg error: {error_msg}")
+                            print(f"Warning FFmpeg error: {error_msg}")
         except Exception as e:
             if self.verbose:
-                print(f"⚠️ Error monitoring thread failed: {e}")
+                print(f"Warning Error monitoring thread failed: {e}")
     
     def write_frame(self, frame: np.ndarray) -> bool:
         """
@@ -251,12 +251,12 @@ class FFmpegWriter:
 
         except BrokenPipeError:
             if self.verbose:
-                print("🚨 FFmpeg pipe broken - process may have terminated")
+                print("Warning FFmpeg pipe broken - process may have terminated")
             self.is_running = False
             return False
         except Exception as e:
             if self.verbose:
-                print(f"❌ Failed to write frame: {e}")
+                print(f"ERROR Failed to write frame: {e}")
             return False
     
     def get_stats(self) -> Dict[str, Any]:
@@ -287,10 +287,10 @@ class FFmpegWriter:
         if self.mock_mode:
             if self.verbose:
                 elapsed = time.time() - self.start_time if self.start_time else 0
-                print(f"🏁 Mock FFmpeg mode stopped:")
-                print(f"  • Frames written: {self.frames_written}")
-                print(f"  • Duration: {elapsed:.1f}s")
-                print(f"  • Average FPS: {self.frames_written / elapsed:.1f}" if elapsed > 0 else "  • Average FPS: N/A")
+                print(f"Finished Mock FFmpeg mode stopped:")
+                print(f"  - Frames written: {self.frames_written}")
+                print(f"  - Duration: {elapsed:.1f}s")
+                print(f"  - Average FPS: {self.frames_written / elapsed:.1f}" if elapsed > 0 else "  - Average FPS: N/A")
 
             self.is_running = False
             return True
@@ -306,15 +306,15 @@ class FFmpegWriter:
 
                 if self.verbose:
                     elapsed = time.time() - self.start_time if self.start_time else 0
-                    print(f"🏁 FFmpeg process stopped:")
-                    print(f"  • Frames written: {self.frames_written}")
-                    print(f"  • Duration: {elapsed:.1f}s")
-                    print(f"  • Average FPS: {self.frames_written / elapsed:.1f}" if elapsed > 0 else "  • Average FPS: N/A")
-                    print(f"  • Return code: {return_code}")
+                    print(f"Finished FFmpeg process stopped:")
+                    print(f"  - Frames written: {self.frames_written}")
+                    print(f"  - Duration: {elapsed:.1f}s")
+                    print(f"  - Average FPS: {self.frames_written / elapsed:.1f}" if elapsed > 0 else "  - Average FPS: N/A")
+                    print(f"  - Return code: {return_code}")
 
                 if return_code != 0:
                     if self.verbose:
-                        print("⚠️ FFmpeg process ended with non-zero return code")
+                        print("Warning FFmpeg process ended with non-zero return code")
                         if self.error_output:
                             print("Recent errors:")
                             for error in self.error_output[-5:]:
@@ -325,7 +325,7 @@ class FFmpegWriter:
 
         except subprocess.TimeoutExpired:
             if self.verbose:
-                print("⚠️ FFmpeg process did not terminate gracefully, forcing...")
+                print("Warning FFmpeg process did not terminate gracefully, forcing...")
 
             if self.process:
                 self.process.kill()
@@ -335,7 +335,7 @@ class FFmpegWriter:
             return False
         except Exception as e:
             if self.verbose:
-                print(f"❌ Error stopping FFmpeg: {e}")
+                print(f"ERROR Error stopping FFmpeg: {e}")
             self.is_running = False
             return False
     
@@ -373,8 +373,8 @@ def test_ffmpeg_availability(ffmpeg_path: str = "ffmpeg") -> bool:
 
 if __name__ == "__main__":
     # Simple test
-    print("🧪 Testing FFmpeg availability...")
+    print("[Test] Testing FFmpeg availability...")
     if test_ffmpeg_availability():
-        print("✅ FFmpeg is available")
+        print("OK FFmpeg is available")
     else:
-        print("❌ FFmpeg not found or not working")
+        print("ERROR FFmpeg not found or not working")

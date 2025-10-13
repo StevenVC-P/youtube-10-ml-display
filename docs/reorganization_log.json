@@ -1,0 +1,30 @@
+{
+  "reorganization_date": "2025-10-11",
+  "moves_planned": 30,
+  "moves_successful": 30,
+  "new_structure": {
+    "core": {
+      "agents/": "ML algorithm implementations",
+      "envs/": "Environment wrappers and configurations",
+      "training/": "Training scripts and callbacks",
+      "conf/": "Configuration files"
+    },
+    "epic_training/": {
+      "scripts/": "Epic training scripts",
+      "configs/": "Epic-specific configurations",
+      "utils/": "Epic training utilities"
+    },
+    "games/": "Game-specific epic data and models",
+    "models/": "Trained models and checkpoints",
+    "video/": "Generated videos and outputs",
+    "logs/": "Training logs and tensorboard data",
+    "tools/": {
+      "video_tools/": "Video processing utilities",
+      "storage/": "Storage management tools",
+      "analysis/": "Analysis and visualization tools"
+    },
+    "tests/": "Unit tests and integration tests",
+    "docs/": "Documentation and reports",
+    "archive/": "Old/deprecated files and experiments"
+  }
+}

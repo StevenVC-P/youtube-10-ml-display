@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import subprocess
 import json
+from fractions import Fraction
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -36,7 +37,7 @@ class VideoManifestBuilder:
             'realistic_gameplay': 'video/realistic_gameplay'
         }
         
-        print(f"📋 Video Manifest Builder initialized")
+        print(f"[Manifest] Video Manifest Builder initialized")
         print(f"   Scanning directories: {list(self.video_dirs.keys())}")
     
     def get_video_metadata(self, video_path: Path) -> Optional[Dict]:
@@ -53,7 +54,7 @@ class VideoManifestBuilder:
             
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
-                print(f"⚠️ ffprobe failed for {video_path}: {result.stderr}")
+                print(f"Warning ffprobe failed for {video_path}: {result.stderr}")
                 return None
             
             data = json.loads(result.stdout)
@@ -67,21 +68,27 @@ class VideoManifestBuilder:
                     break
             
             if not video_stream:
-                print(f"⚠️ No video stream found in {video_path}")
+                print(f"Warning No video stream found in {video_path}")
                 return None
             
+            fps_raw = video_stream.get('r_frame_rate', '0/1')
+            try:
+                fps_value = float(Fraction(fps_raw))
+            except (ValueError, ZeroDivisionError):
+                fps_value = 0.0
+
             return {
                 'duration': float(format_info.get('duration', 0)),
                 'size_bytes': int(format_info.get('size', 0)),
                 'bitrate': int(format_info.get('bit_rate', 0)),
                 'width': int(video_stream.get('width', 0)),
                 'height': int(video_stream.get('height', 0)),
-                'fps': eval(video_stream.get('r_frame_rate', '0/1')),
+                'fps': fps_value,
                 'codec': video_stream.get('codec_name', 'unknown')
             }
             
         except Exception as e:
-            print(f"❌ Error getting metadata for {video_path}: {e}")
+            print(f"ERROR Error getting metadata for {video_path}: {e}")
             return None
     
     def parse_filename_metadata(self, filename: str, category: str) -> Dict:
@@ -149,10 +156,10 @@ class VideoManifestBuilder:
         path = Path(dir_path)
         
         if not path.exists():
-            print(f"⚠️ Directory not found: {dir_path}")
+            print(f"Warning Directory not found: {dir_path}")
             return videos
         
-        print(f"🔍 Scanning {category}: {dir_path}")
+        print(f"[Scan] Scanning {category}: {dir_path}")
         
         # Supported video extensions
         video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
@@ -211,7 +218,7 @@ class VideoManifestBuilder:
     
     def build_manifest(self) -> List[Dict]:
         """Build complete manifest of all video files."""
-        print("🎬 Building video manifest...")
+        print("[Video] Building video manifest...")
         
         all_videos = []
         
@@ -232,16 +239,16 @@ class VideoManifestBuilder:
         
         all_videos.sort(key=sort_key)
         
-        print(f"📊 Manifest complete: {len(all_videos)} total videos")
+        print(f"[Stats] Manifest complete: {len(all_videos)} total videos")
         return all_videos
     
     def save_manifest_csv(self, videos: List[Dict], output_path: str = "manifest.csv"):
         """Save manifest to CSV file."""
         if not videos:
-            print("⚠️ No videos to save in manifest")
+            print("Warning No videos to save in manifest")
             return
         
-        print(f"💾 Saving manifest to: {output_path}")
+        print(f"[Save] Saving manifest to: {output_path}")
         
         # Define CSV columns
         columns = [
@@ -265,15 +272,15 @@ class VideoManifestBuilder:
                 
                 writer.writerow(row)
         
-        print(f"✅ Manifest saved with {len(videos)} entries")
+        print(f"OK Manifest saved with {len(videos)} entries")
     
     def print_summary(self, videos: List[Dict]):
         """Print summary statistics of the manifest."""
         if not videos:
-            print("📊 No videos found")
+            print("[Stats] No videos found")
             return
         
-        print("\n📊 Manifest Summary")
+        print("\n[Stats] Manifest Summary")
         print("=" * 50)
         
         # Count by category
@@ -290,31 +297,27 @@ class VideoManifestBuilder:
         for category, count in by_category.items():
             print(f"   {category}: {count} videos")
         
-        print(f"\n📈 Totals:")
+        print(f"\n[Totals] Totals:")
         print(f"   Videos: {len(videos)}")
         print(f"   Duration: {total_duration/3600:.1f} hours")
         print(f"   Size: {total_size/1024/1024:.1f} MB")
 
 
-def load_config():
+def load_config(config_path: str = "conf/config.yaml") -> Dict:
     """Load configuration from config.yaml."""
     import yaml
-    with open("conf/config.yaml", 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 
 def build_manifest_from_config(config_path: str = "conf/config.yaml", output_path: str = "manifest.csv"):
     """Build manifest using configuration file."""
-    import yaml
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    
+    config = load_config(config_path)
     builder = VideoManifestBuilder(config)
     videos = builder.build_manifest()
     builder.save_manifest_csv(videos, output_path)
     builder.print_summary(videos)
-    
-    return videos
+    return builder, videos
 
 
 def main():
@@ -330,10 +333,9 @@ def main():
     print("=" * 50)
     
     try:
-        videos = build_manifest_from_config(args.config, args.output)
+        builder, videos = build_manifest_from_config(args.config, args.output)
         
         if args.summary:
-            builder = VideoManifestBuilder(load_config())
             builder.print_summary(videos)
         
         print("\nManifest building complete!")

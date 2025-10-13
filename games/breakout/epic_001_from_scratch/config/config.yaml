@@ -20,9 +20,9 @@ train:
   algo: "ppo"
   policy: "CnnPolicy"
   total_timesteps: 10000000
-  vec_envs: 1
-  n_steps: 16
-  batch_size: 32
+  vec_envs: 8
+  n_steps: 128
+  batch_size: 256
   learning_rate: 2.5e-4
   clip_range: 0.1
   ent_coef: 0.01

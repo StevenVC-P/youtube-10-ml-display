@@ -23,9 +23,21 @@ from stable_baselines3.common.logger import configure
 sys.path.append(str(Path(__file__).parent.parent))
 
 from conf.config import load_config
+
+# Check for epic-specific configuration
+def get_config_path():
+    """Get the appropriate config path based on environment variables."""
+    epic_dir = os.environ.get('EPIC_DIR')
+    if epic_dir:
+        epic_config = Path(epic_dir) / "config" / "config.yaml"
+        if epic_config.exists():
+            return str(epic_config)
+    return None  # Use default
 from envs.make_env import make_vec_env, get_env_info
 from agents.algo_factory import create_algo, print_system_info, get_algorithm_info
 from training.callbacks import MilestoneVideoCallback, TrainingProgressCallback
+from training.ml_analytics_callback import MLAnalyticsVideoCallback
+from training.hour_video_callback import HourVideoCallback
 
 
 class TimedCheckpointCallback(BaseCallback):
@@ -52,10 +64,10 @@ class TimedCheckpointCallback(BaseCallback):
         self.save_path.mkdir(parents=True, exist_ok=True)
         
         if self.verbose > 0:
-            print(f"⏰ TimedCheckpointCallback initialized:")
-            print(f"  • Save path: {self.save_path.absolute()}")
-            print(f"  • Checkpoint every: {checkpoint_every_sec} seconds")
-            print(f"  • Keep last: {keep_last} checkpoints")
+            print(f"[Timer] TimedCheckpointCallback initialized:")
+            print(f"  - Save path: {self.save_path.absolute()}")
+            print(f"  - Checkpoint every: {checkpoint_every_sec} seconds")
+            print(f"  - Keep last: {keep_last} checkpoints")
     
     def _on_step(self) -> bool:
         current_time = time.time()
@@ -121,9 +133,9 @@ class TimedCheckpointCallback(BaseCallback):
             try:
                 old_file.unlink()
                 if self.verbose > 1:
-                    print(f"🗑️  Removed old checkpoint: {old_file.name}")
+                    print(f"[Cleanup]  Removed old checkpoint: {old_file.name}")
             except Exception as e:
-                print(f"⚠️  Warning: Could not remove {old_file.name}: {e}")
+                print(f"Warning  Warning: Could not remove {old_file.name}: {e}")
 
 
 class TrainingStatsCallback(BaseCallback):
@@ -145,7 +157,7 @@ class TrainingStatsCallback(BaseCallback):
             steps_per_sec = self.n_calls / elapsed if elapsed > 0 else 0
             
             if self.verbose > 0:
-                print(f"📊 Step {self.n_calls:,} | "
+                print(f"[Stats] Step {self.n_calls:,} | "
                       f"Elapsed: {elapsed:.1f}s | "
                       f"Speed: {steps_per_sec:.1f} steps/s")
         
@@ -217,16 +229,16 @@ def train_agent(
     
     # Create algorithm
     if verbose > 0:
-        print(f"🤖 Creating {train_config['algo'].upper()} algorithm...")
+        print(f"[Agent] Creating {train_config['algo'].upper()} algorithm...")
     
     algo = create_algo(config, vec_env, tensorboard_log=tb_log_path)
     
     # Get algorithm info
     algo_info = get_algorithm_info(algo)
     if verbose > 0:
-        print(f"📊 Algorithm Configuration:")
+        print(f"[Stats] Algorithm Configuration:")
         for key, value in algo_info.items():
-            print(f"  • {key}: {value}")
+            print(f"  - {key}: {value}")
 
     # Determine training duration
     total_timesteps = train_config.get('total_timesteps', 10000000)
@@ -236,7 +248,7 @@ def train_agent(
         estimated_steps_per_sec = 1000  # Conservative estimate
         total_timesteps = min(total_timesteps, dryrun_seconds * estimated_steps_per_sec)
         if verbose > 0:
-            print(f"🧪 Dry run mode: Training for ~{dryrun_seconds} seconds ({total_timesteps:,} steps)")
+            print(f"[Test] Dry run mode: Training for ~{dryrun_seconds} seconds ({total_timesteps:,} steps)")
 
     # Setup callbacks
     callbacks = []
@@ -250,26 +262,25 @@ def train_agent(
     )
     callbacks.append(checkpoint_callback)
 
-    # Milestone video callback
-    recording_config = config.get('recording', {})
-    if recording_config.get('milestones_pct'):
-        milestone_callback = MilestoneVideoCallback(
-            config=config,
-            milestones_pct=recording_config['milestones_pct'],
-            clip_seconds=recording_config.get('milestone_clip_seconds', 90),
-            fps=recording_config.get('fps', 30),
-            verbose=verbose
-        )
-        callbacks.append(milestone_callback)
+    # Epic 10-Hour Neural Network Learning Journey
+    # 10 consecutive 1-hour videos showing complete learning progression
+    epic_journey_callback = MLAnalyticsVideoCallback(
+        config=config,
+        milestones_pct=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],  # 10 milestones = 10 hours
+        clip_seconds=3600,  # 1 hour = 3600 seconds per video
+        fps=30,
+        verbose=verbose
+    )
+    callbacks.append(epic_journey_callback)
 
-        # Training progress callback (works well with milestone callback)
-        progress_callback = TrainingProgressCallback(
-            total_timesteps=total_timesteps,
-            milestones_pct=recording_config['milestones_pct'],
-            log_every_steps=10000,
-            verbose=verbose
-        )
-        callbacks.append(progress_callback)
+    # Training progress callback
+    progress_callback = TrainingProgressCallback(
+        total_timesteps=total_timesteps,
+        milestones_pct=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],  # Progress markers
+        log_every_steps=10000,
+        verbose=verbose
+    )
+    callbacks.append(progress_callback)
 
     # Training stats callback
     stats_callback = TrainingStatsCallback(
@@ -313,7 +324,7 @@ def train_agent(
         
     except KeyboardInterrupt:
         if verbose > 0:
-            print("\n⏹️  Training interrupted by user")
+            print("\n[Stop]  Training interrupted by user")
         
         # Save final checkpoint
         final_path = models_path / "latest.zip"
@@ -352,9 +363,14 @@ def main():
     
     args = parser.parse_args()
     
-    # Load configuration
+    # Load configuration (epic-specific if available)
     try:
-        config = load_config(args.config)
+        epic_config_path = get_config_path()
+        if epic_config_path and not args.config:
+            print(f"[Epic] Using epic-specific config: {epic_config_path}")
+            config = load_config(epic_config_path)
+        else:
+            config = load_config(args.config)
     except Exception as e:
         print(f"ERROR: Error loading config: {e}")
         sys.exit(1)
