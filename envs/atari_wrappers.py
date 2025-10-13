@@ -12,7 +12,7 @@ from gymnasium.wrappers import (
     ResizeObservation,
     FrameStackObservation
 )
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 import cv2
 
 # Register ALE environments with multiple approaches
@@ -258,6 +258,38 @@ class FrameStackWrapper(gym.Wrapper):
         return np.stack(self.frames, axis=-1)
 
 
+class FireResetWrapper(gym.Wrapper):
+    """
+    Wrapper that presses the FIRE button on reset if the environment requires it.
+    Many Atari games, including Breakout, wait for a FIRE input after reset to serve
+    the next ball, which can leave recordings idle. This wrapper sends the action
+    automatically when needed.
+    """
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.fire_action = None
+
+        # Determine the FIRE action if available
+        if hasattr(env.unwrapped, "get_action_meanings"):
+            meanings = env.unwrapped.get_action_meanings()
+            if "FIRE" in meanings:
+                self.fire_action = meanings.index("FIRE")
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+
+        if self.fire_action is not None:
+            obs, _, terminated, truncated, info = self.env.step(self.fire_action)
+            if terminated or truncated:
+                obs, info = self.env.reset(**kwargs)
+
+        return obs, info
+
+    def step(self, action):
+        return self.env.step(action)
+
+
 def apply_atari_wrappers(env: gym.Env, config: Dict[str, Any]) -> gym.Env:
     """
     Apply the standard Atari preprocessing pipeline based on config.
@@ -287,7 +319,10 @@ def apply_atari_wrappers(env: gym.Env, config: Dict[str, Any]) -> gym.Env:
     # 4. Frame stacking
     if game_config.get('frame_stack', 4) > 1:
         env = FrameStackWrapper(env, num_stack=game_config['frame_stack'])
-    
+
+    # 5. Ensure FIRE is pressed on resets for games that need it
+    env = FireResetWrapper(env)
+
     return env
 
 

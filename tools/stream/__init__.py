@@ -9,11 +9,12 @@ This module provides:
 """
 
 from .ffmpeg_io import FFmpegWriter, test_ffmpeg_availability
-from .stream_eval import ContinuousEvaluator, GridComposer
+from .stream_eval import ContinuousEvaluator
+from .grid_composer import SingleScreenComposer
 
 __all__ = [
     'FFmpegWriter',
-    'test_ffmpeg_availability', 
+    'test_ffmpeg_availability',
     'ContinuousEvaluator',
-    'GridComposer'
+    'SingleScreenComposer'
 ]

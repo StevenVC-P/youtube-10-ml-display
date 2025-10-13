@@ -1,30 +1,32 @@
-# YouTube 10 ML Display
+# 🎮 Atari ML Epic Training Project
 
-A machine learning project for creating continuous ~10-hour YouTube content showing an AI agent learning to play Atari games. This system implements a dual-track approach with fast training and real-time visualization.
+A machine learning project for creating epic 10-hour neural network learning journey videos. Watch AI agents progress from random play to mastery across multiple Atari games through continuous "epic" training sessions.
 
 ## 🎯 Project Overview
 
-This project creates engaging YouTube content by:
+This project creates engaging long-form content by:
 
-- **Track A**: Fast PPO training on vectorized Atari environments
-- **Track B**: Real-time visualization with grid display and progress tracking
-- **Output**: Continuous ~10-hour video showing learning progression
+- **Epic Training System**: Sequential 10-hour training sessions with model continuity
+- **Multi-Game Support**: 6 Atari games (Breakout, Pong, Space Invaders, Asteroids, Pacman, Frogger)
+- **Progressive Learning**: Each epic builds on the previous epic's final model
+- **Automated Pipeline**: Sequential epic launcher for hands-off training
 
-### Current Status: Sprint 1 Complete ✅
+### Current Status: Epic Training System Complete ✅
 
-- ✅ Environment factory with Atari wrappers
-- ✅ Comprehensive test suite (12/12 tests passing)
-- ✅ BreakoutNoFrameskip-v4 validated with shape (84, 84, 1, 4)
-- 🚀 Ready for Sprint 2: PPO Trainer
+- ✅ **Epic 1 (Breakout)**: Complete - 10 hours from scratch to competent play
+- ✅ **Epic 2 (Breakout)**: Complete - Advanced mastery training
+- 🔄 **Epic 3 (Breakout)**: Currently running - Perfect play optimization
+- ⏳ **Epics 4-10**: Queued for automatic sequential launch
+- 🎮 **Multi-Game Ready**: Pong, Space Invaders, Asteroids, Pacman, Frogger
 
 **Target OS:** Windows 10/11 (PowerShell)
-**Python:** 3.13+ (virtualenv: `.venv`)
+**Python:** 3.11+ (virtualenv: `.venv`)
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Python 3.13+
+- Python 3.11+
 - Windows 10/11 with PowerShell
 - Git
 - FFmpeg (for video generation)
@@ -35,7 +37,7 @@ This project creates engaging YouTube content by:
 
 ```powershell
 git clone <repository-url>
-cd "Atari ML project"
+cd "atari-ml-epic-training"
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 ```
@@ -56,47 +58,89 @@ python -m pytest tests/test_env_factory.py -v
 
 Expected output: `12 passed` with Atari environment working.
 
+### Epic Training Usage
+
+```powershell
+# Start a single epic (10 hours)
+python epic_training/scripts/train_epic_continuous.py --game breakout --epic 1
+
+# Launch sequential epics (auto-progression)
+python epic_training/scripts/launch_breakout_epics_3_to_10.py
+
+# Check epic status
+python epic_training/scripts/check_epic_status.py
+
+# Test a different game
+python epic_training/scripts/train_epic_continuous.py --game pong --epic 1 --test
+
+# Launch epic for different game
+python epic_training/scripts/train_epic_continuous.py --game pong --epic 1 --hours 10
+```
+
 ## Project Structure
 
 ```
-youtube-10-ml-display/
-  conf/
-    config.yaml              # Main configuration file
-  envs/
-    atari_wrappers.py       # Atari environment wrappers
-    make_env.py             # Environment factory
-  agents/
-    algo_factory.py         # Algorithm factory (PPO/DQN)
-  training/
-    train.py                # Main training script
-    eval.py                 # Evaluation script
-    callbacks.py            # Training callbacks
-  stream/
-    stream_eval.py          # Continuous evaluation streamer
-    ffmpeg_io.py            # FFmpeg wrapper
-  video/
-    milestones/             # Milestone video clips
-    eval/                   # Evaluation video clips
-    render/
-      parts/                # Video segments for final render
-  models/
-    checkpoints/            # Model checkpoints
-  logs/
-    tb/                     # TensorBoard logs
-  video_tools/
-    build_manifest.py       # Build video manifest
-    render_supercut.py      # Create final supercut
-    concat_segments.py      # Concatenate video segments
-  scripts/
-    estimate_storage.py     # Storage estimation utility
-  tests/
-    test_env_factory.py     # Environment tests
-    test_config_schema.py   # Config validation tests
+atari-ml-epic-training/
+  📁 Core Components
+  ├── agents/              # ML algorithm implementations
+  ├── envs/               # Environment wrappers and configurations
+  ├── training/           # Training scripts and callbacks
+  └── conf/               # Configuration files
+
+  📁 Epic Training System
+  └── epic_training/
+      ├── scripts/        # Epic training and launcher scripts
+      ├── configs/        # Epic-specific configurations
+      └── utils/          # Epic training utilities
+
+  📁 Games & Data
+  ├── games/              # Per-game epic training data
+  │   ├── breakout/       # Breakout epic directories (epic_001, epic_002, etc.)
+  │   ├── pong/           # Pong epic directories
+  │   └── ...             # Other supported games (space_invaders, asteroids, etc.)
+  ├── models/             # Shared model checkpoints
+  ├── logs/               # Training logs and TensorBoard data
+  └── video/              # Generated video content
+
+  📁 Tools & Utilities
+  ├── tools/              # Analysis and utility scripts
+  ├── tests/              # Test suite
+  └── docs/               # Documentation
 ```
+
+## Epic Training System
+
+### Supported Games
+
+| Game               | Environment ID              | Difficulty | Description                           |
+| ------------------ | --------------------------- | ---------- | ------------------------------------- |
+| **breakout**       | BreakoutNoFrameskip-v4      | ⭐⭐⭐     | Classic brick-breaking game           |
+| **pong**           | PongNoFrameskip-v4          | ⭐⭐       | Simple paddle game                    |
+| **space_invaders** | SpaceInvadersNoFrameskip-v4 | ⭐⭐⭐     | Shoot descending aliens               |
+| **asteroids**      | AsteroidsNoFrameskip-v4     | ⭐⭐⭐⭐   | Navigate and shoot asteroids          |
+| **pacman**         | MsPacmanNoFrameskip-v4      | ⭐⭐⭐     | Maze navigation and pellet collection |
+| **frogger**        | FroggerNoFrameskip-v4       | ⭐⭐⭐     | Cross roads and rivers safely         |
+
+### Epic Progression
+
+Each game follows a 3-epic progression:
+
+1. **Epic 1 - From Scratch**: 10 hours of training from random play to basic competency
+2. **Epic 2 - Advanced Mastery**: 10 hours building on Epic 1's model for advanced play
+3. **Epic 3 - Perfect Play**: 10 hours optimizing from advanced to expert-level performance
+
+### Memory Configuration
+
+The system uses ultra-low memory configuration for stability:
+
+- **1 vectorized environment** (vs 8 standard)
+- **32 batch size** (vs 256 standard)
+- **16 n_steps** (vs 128 standard)
+- **Slower but reliable**: ~33 hours per epic, no crashes
 
 ## Common Commands
 
-### Training
+### Epic Training
 
 ```powershell
 # Start full training

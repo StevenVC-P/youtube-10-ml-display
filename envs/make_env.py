@@ -156,7 +156,7 @@ def make_eval_env(
         monitor_dir=None,
         record_video=record_video,
         video_dir=video_dir,
-        video_length=1  # Record every episode
+        video_length=0  # Record full episodes
     )
     
     return env_factory()

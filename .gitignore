@@ -55,7 +55,13 @@ logs/tb/*
 !logs/tb/.gitkeep
 *.log
 
-# Video outputs
+# Video outputs (all video files are large and shouldn't be in git)
+video/**/*.mp4
+video/**/*.avi
+video/**/*.mov
+video/**/*.mkv
+video/**/*.webm
+video/days/*
 video/milestones/*
 video/eval/*
 video/render/parts/*
@@ -68,6 +74,18 @@ video/test/*
 !video/demo/.gitkeep
 !video/realistic_gameplay/.gitkeep
 !video/test/.gitkeep
+
+# Epic training data (large model files and training data)
+games/**/epic_*/models/**/*.zip
+games/**/epic_*/models/**/*.pt
+games/**/epic_*/models/**/*.pth
+games/**/epic_*/videos/**/*.mp4
+games/**/epic_*/videos/**/*.avi
+games/**/epic_*/logs/tensorboard/*
+games/**/epic_*/logs/training/*
+!games/**/epic_*/models/.gitkeep
+!games/**/epic_*/videos/.gitkeep
+!games/**/epic_*/logs/.gitkeep
 
 # Temporary files
 *.tmp
@@ -109,6 +127,20 @@ start_*.py
 *_DRAFT.md
 CLEANUP_*.md
 segment_*.mp4
+
+# Development and cleanup files
+cleanup_*.py
+configure_storage.py
+test_single_game.py
+create_realistic_gameplay_video.py
+
+# Archive and unused directories (keep structure but not content)
+archive/old_experiments/*
+archive/old_models/*
+archive/unused/*
+!archive/old_experiments/.gitkeep
+!archive/old_models/.gitkeep
+!archive/unused/.gitkeep
 
 # FFmpeg (if downloaded locally)
 ffmpeg.exe
