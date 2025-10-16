@@ -20,9 +20,9 @@ train:
   algo: "ppo"
   policy: "CnnPolicy"
   total_timesteps: 10000000
-  vec_envs: 1
-  n_steps: 16
-  batch_size: 32
+  vec_envs: 16 # Increased for better GPU utilization (RTX 3070 Ti can handle more)
+  n_steps: 256 # Increased for better GPU batch processing
+  batch_size: 512 # Increased for better GPU utilization
   learning_rate: 2.5e-4
   clip_range: 0.1
   ent_coef: 0.01

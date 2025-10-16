@@ -83,6 +83,8 @@ games/**/epic_*/videos/**/*.mp4
 games/**/epic_*/videos/**/*.avi
 games/**/epic_*/logs/tensorboard/*
 games/**/epic_*/logs/training/*
+games/**/epic_series_progress.json
+games/**/epic_*/config/config.py
 !games/**/epic_*/models/.gitkeep
 !games/**/epic_*/videos/.gitkeep
 !games/**/epic_*/logs/.gitkeep
@@ -98,7 +100,7 @@ tmp/
 Thumbs.db
 desktop.ini
 
-# Project specific test files
+# Project specific test files and debug artifacts
 test_*.txt
 *_results.txt
 debug_*.py
@@ -134,13 +136,49 @@ configure_storage.py
 test_single_game.py
 create_realistic_gameplay_video.py
 
+# Debug artifacts and temporary images
+*.png
+!docs/**/*.png
+!README_assets/**/*.png
+debug_frames/
+frame_*.png
+boot_*.png
+step_*.png
+continue_*.png
+manual_*.png
+simple_*.png
+direct_*.png
+after_*.png
+
+# Temporary development scripts
+manual_*.py
+simple_*.py
+detailed_*.py
+quick_*.py
+setup_*.py
+create_working_*.py
+
+# Development status files
+*_COMPLETE.md
+*_STATUS.md
+GAMEBOY_*.md
+AUTHENTIC_*.md
+
 # Archive and unused directories (keep structure but not content)
 archive/old_experiments/*
 archive/old_models/*
 archive/unused/*
+archive/development_artifacts/debug_images/*
+archive/development_artifacts/debug_scripts/*
+archive/development_artifacts/test_scripts/*
+archive/development_artifacts/*.md
 !archive/old_experiments/.gitkeep
 !archive/old_models/.gitkeep
 !archive/unused/.gitkeep
+!archive/development_artifacts/.gitkeep
+!archive/development_artifacts/debug_images/.gitkeep
+!archive/development_artifacts/debug_scripts/.gitkeep
+!archive/development_artifacts/test_scripts/.gitkeep
 
 # FFmpeg (if downloaded locally)
 ffmpeg.exe

@@ -1,0 +1,5 @@
+# This directory contains development artifacts moved during cleanup
+# - debug_images/: Debug screenshots and frame captures
+# - debug_scripts/: Development and debugging Python scripts  
+# - test_scripts/: Test and experimental scripts
+# - Various status and completion markdown files

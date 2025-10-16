@@ -366,11 +366,14 @@ def main():
     # Load configuration (epic-specific if available)
     try:
         epic_config_path = get_config_path()
-        if epic_config_path and not args.config:
+        # Use epic config if available and user didn't explicitly specify a config
+        if epic_config_path and args.config == "conf/config.yaml":
             print(f"[Epic] Using epic-specific config: {epic_config_path}")
             config = load_config(epic_config_path)
+            print(f"[Epic] Loaded environment ID: {config['game']['env_id']}")
         else:
             config = load_config(args.config)
+            print(f"[Default] Using config: {args.config}, environment ID: {config['game']['env_id']}")
     except Exception as e:
         print(f"ERROR: Error loading config: {e}")
         sys.exit(1)

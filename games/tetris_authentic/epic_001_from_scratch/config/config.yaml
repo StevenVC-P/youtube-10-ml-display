@@ -1,0 +1,74 @@
+project_name: "youtube-10-ml-display"
+seed: 42
+
+paths:
+  videos_milestones: "games/tetris_authentic/epic_001_from_scratch/videos/individual_hours"
+  videos_eval: "video/eval"
+  videos_parts: "video/render/parts"
+  logs_tb: "games/tetris_authentic/epic_001_from_scratch/logs/tensorboard"
+  models: "games/tetris_authentic/epic_001_from_scratch/models/checkpoints"
+  ffmpeg_path: "C:\\Users\\steve\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.0-full_build\\bin\\ffmpeg.exe"
+
+game:
+  env_id: "tetris_gb_authentic"
+  frame_stack: 4
+  resize: [84, 84]
+  grayscale: true
+  max_skip: 4
+
+train:
+  algo: "ppo"
+  policy: "CnnPolicy"
+  total_timesteps: 10000000
+  vec_envs: 1
+  n_steps: 16
+  batch_size: 32
+  learning_rate: 2.5e-4
+  clip_range: 0.1
+  ent_coef: 0.01
+  vf_coef: 0.5
+  gamma: 0.99
+  gae_lambda: 0.95
+  checkpoint_every_sec: 60
+  keep_last: 5
+
+recording:
+  fps: 30
+  crf: 23
+  milestone_clip_seconds: 90
+  eval_clip_seconds: 120
+  milestones_pct: [0, 1, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+  eval_every_steps: 100000
+  eval_episodes: 2
+
+stream:
+  enabled: true
+  pane_size: [640, 480]
+  fps: 30
+  overlay_hud: true
+  checkpoint_poll_sec: 30
+  save_mode: "segments"
+  segment_seconds: 1800
+  output_basename: "breakout_training"
+  preset: "veryfast"
+  crf: 23
+
+render:
+  target_hours: 10
+  music_path: "assets/music.mp3"
+  add_titles: true
+
+video_tools:
+  manifest:
+    output_path: "manifest.csv"
+    include_metadata: true
+    scan_subdirs: true
+  concat:
+    method: "auto" # "auto", "file_list", "filter_complex"
+    output_path: "video/render/youtube_10h.mp4"
+    validate_compatibility: true
+  supercut:
+    output_path: "video/render/youtube_supercut.mp4"
+    clip_selection_strategy: "intelligent" # "intelligent", "chronological", "random"
+    max_clips: 100
+    transition_duration: 0.5
