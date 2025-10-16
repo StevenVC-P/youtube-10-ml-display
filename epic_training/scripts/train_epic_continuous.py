@@ -32,14 +32,28 @@ def get_epic_info(game: str, epic_num: int):
     """Get information about an epic with proper progression descriptions."""
     epic_names = {
         1: "from_scratch",
-        2: "advanced_mastery", 
-        3: "perfect_play"
+        2: "advanced_mastery",
+        3: "perfect_play",
+        4: "speed_demon",
+        5: "precision_master",
+        6: "strategic_genius",
+        7: "endurance_champion",
+        8: "adaptive_expert",
+        9: "ultimate_mastery",
+        10: "legendary_status"
     }
-    
+
     epic_descriptions = {
         1: "Complete learning from zero - random play to competent performance",
         2: "Advanced mastery - building on competent play to reach expert level",
-        3: "Perfect play optimization - expert level to flawless execution"
+        3: "Perfect play optimization - expert level to flawless execution",
+        4: "Speed demon training - optimize for fast completion and efficiency",
+        5: "Precision master - perfect ball control and strategic positioning",
+        6: "Strategic genius - advanced game strategies and pattern recognition",
+        7: "Endurance champion - long-term consistency and sustained performance",
+        8: "Adaptive expert - handle game variations and edge cases",
+        9: "Ultimate mastery - peak performance across all game scenarios",
+        10: "Legendary status - transcendent gameplay beyond human capability"
     }
     
     epic_name = epic_names.get(epic_num, f"epic_{epic_num}")
@@ -50,14 +64,33 @@ def get_epic_info(game: str, epic_num: int):
 def get_game_env_id(game: str):
     """Get the environment ID for a game."""
     env_mapping = {
+        # Atari Games (ALE)
         "breakout": "BreakoutNoFrameskip-v4",
         "pong": "PongNoFrameskip-v4",
-        "space_invaders": "SpaceInvadersNoFrameskip-v4", 
+        "space_invaders": "SpaceInvadersNoFrameskip-v4",
         "asteroids": "AsteroidsNoFrameskip-v4",
         "pacman": "MsPacmanNoFrameskip-v4",
-        "frogger": "FroggerNoFrameskip-v4"
+        "frogger": "FroggerNoFrameskip-v4",
+
+        # Gameboy Games (tetris-gymnasium - coded remake)
+        "tetris": "tetris_gymnasium/Tetris",
+
+        # Gameboy Games (PyBoy - authentic emulation)
+        "tetris_authentic": "tetris_gb_authentic",
+        "tetris_gb_authentic": "tetris_gb_authentic",
+        "mario_land_authentic": "mario_land_authentic",
+        "super_mario_land_authentic": "super_mario_land_authentic",
+        "kirby_authentic": "kirby_authentic",
+        "kirbys_dream_land_authentic": "kirbys_dream_land_authentic",
+
+        # Gameboy Games (stable-retro - if available)
+        "tetris_gb": "Tetris-GameBoy",
+        "super_mario_land": "SuperMarioLand-GameBoy",
+        "kirbys_dream_land": "KirbysDreamLand-GameBoy",
+        "mario_land": "SuperMarioLand-GameBoy",
+        "kirby": "KirbysDreamLand-GameBoy"
     }
-    
+
     return env_mapping.get(game.lower(), f"{game.title()}NoFrameskip-v4")
 
 def find_previous_epic_model(game: str, epic_num: int):
@@ -140,18 +173,18 @@ def create_epic_config(game: str, epic_num: int, paths: dict, hours: int = 10, p
         with open(base_config_path, 'r') as f:
             config_content = f.read()
         
-        # Update paths for this epic
+        # Update paths for this epic (convert to forward slashes for YAML compatibility)
         config_content = config_content.replace(
             'videos_milestones: "video/milestones"',
-            f'videos_milestones: "{paths["videos_dir"]}/individual_hours"'
+            f'videos_milestones: "{str(paths["videos_dir"]).replace(chr(92), "/")}/individual_hours"'
         )
         config_content = config_content.replace(
             'logs_tb: "logs/tb"',
-            f'logs_tb: "{paths["logs_dir"]}/tensorboard"'
+            f'logs_tb: "{str(paths["logs_dir"]).replace(chr(92), "/")}/tensorboard"'
         )
         config_content = config_content.replace(
             'models: "models/checkpoints"',
-            f'models: "{paths["models_dir"]}/checkpoints"'
+            f'models: "{str(paths["models_dir"]).replace(chr(92), "/")}/checkpoints"'
         )
         config_content = config_content.replace(
             'env_id: "BreakoutNoFrameskip-v4"',
@@ -160,8 +193,9 @@ def create_epic_config(game: str, epic_num: int, paths: dict, hours: int = 10, p
         
         # Add previous model path if available
         if previous_model:
-            # Add a new section for model loading
-            config_content += f'\n\n# Epic Continuity\nepic:\n  load_previous_model: "{previous_model}"\n  epic_number: {epic_num}\n'
+            # Add a new section for model loading (use forward slashes for YAML compatibility)
+            previous_model_yaml = previous_model.replace('\\', '/')
+            config_content += f'\n\n# Epic Continuity\nepic:\n  load_previous_model: "{previous_model_yaml}"\n  epic_number: {epic_num}\n'
         
         # Save epic-specific config
         epic_config_path = paths['config_dir'] / "config.yaml"
@@ -349,10 +383,14 @@ def main():
     """Main function."""
     parser = argparse.ArgumentParser(description="Launch continuous epic training sessions")
     parser.add_argument("--game", required=True,
-                       choices=["breakout", "pong", "space_invaders", "asteroids", "pacman", "frogger"],
+                       choices=["breakout", "pong", "space_invaders", "asteroids", "pacman", "frogger",
+                               "tetris", "tetris_authentic", "tetris_gb_authentic",
+                               "mario_land_authentic", "super_mario_land_authentic",
+                               "kirby_authentic", "kirbys_dream_land_authentic",
+                               "tetris_gb", "super_mario_land", "kirbys_dream_land", "mario_land", "kirby"],
                        help="Game to train on")
-    parser.add_argument("--epic", type=int, required=True, choices=[1, 2, 3],
-                       help="Epic number (1=from_scratch, 2=advanced_mastery, 3=perfect_play)")
+    parser.add_argument("--epic", type=int, required=True, choices=list(range(1, 11)),
+                       help="Epic number (1-10: from_scratch to legendary_status)")
     parser.add_argument("--hours", type=int, default=10,
                        help="Training duration in hours (default: 10)")
     parser.add_argument("--test", action="store_true",

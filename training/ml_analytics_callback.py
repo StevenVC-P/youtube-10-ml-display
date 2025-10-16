@@ -497,6 +497,20 @@ class MLAnalyticsVideoCallback(BaseCallback):
             cv2.putText(panel, "0", (graph_x - 5, graph_y + graph_height + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.25, (150, 150, 150), 1)
             cv2.putText(panel, f"{step}", (graph_x + graph_width - 20, graph_y + graph_height + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.25, (150, 150, 150), 1)
 
+            # Draw legend for the chart lines
+            legend_x = graph_x + graph_width - 120
+            legend_y = graph_y + 15
+
+            # Episode Reward legend (green line)
+            cv2.line(panel, (legend_x, legend_y), (legend_x + 15, legend_y), (100, 255, 100), 2)
+            cv2.putText(panel, "Episode Reward", (legend_x + 20, legend_y + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.25, (100, 255, 100), 1)
+
+            # Value Estimate legend (yellow line) - only if value estimate is available
+            if value_est is not None:
+                legend_y += 12
+                cv2.line(panel, (legend_x, legend_y), (legend_x + 15, legend_y), (255, 255, 100), 1)
+                cv2.putText(panel, "Value Estimate", (legend_x + 20, legend_y + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.25, (255, 255, 100), 1)
+
         except Exception as e:
             # Fallback: just show current reward as text
             cv2.putText(panel, f"Reward: {analytics.get('episode_reward', 0):.1f}", (10, 480), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 255, 100), 1)

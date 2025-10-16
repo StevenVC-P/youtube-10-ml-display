@@ -1,0 +1,88 @@
+{
+  "created": "2025-10-15T22:29:06.790869",
+  "total_epics": 10,
+  "series_title": "Breakout Epic Training Series",
+  "description": "100-hour GPU-accelerated ML training journey with analytics",
+  "epics": {
+    "1": {
+      "number": 1,
+      "name": "from_scratch",
+      "title": "From Scratch",
+      "individual_hours": [],
+      "merged_epic": [],
+      "highlights": []
+    },
+    "2": {
+      "number": 2,
+      "name": "advanced_mastery",
+      "title": "Advanced Mastery",
+      "individual_hours": [],
+      "merged_epic": [],
+      "highlights": []
+    },
+    "3": {
+      "number": 3,
+      "name": "perfect_play",
+      "title": "Perfect Play",
+      "individual_hours": [],
+      "merged_epic": [],
+      "highlights": []
+    },
+    "4": {
+      "number": 4,
+      "name": "speed_demon",
+      "title": "Speed Demon",
+      "individual_hours": [],
+      "merged_epic": [],
+      "highlights": []
+    },
+    "5": {
+      "number": 5,
+      "name": "precision_master",
+      "title": "Precision Master",
+      "individual_hours": [],
+      "merged_epic": [],
+      "highlights": []
+    },
+    "6": {
+      "number": 6,
+      "name": "strategic_genius",
+      "title": "Strategic Genius",
+      "individual_hours": [],
+      "merged_epic": [],
+      "highlights": []
+    },
+    "7": {
+      "number": 7,
+      "name": "endurance_champion",
+      "title": "Endurance Champion",
+      "individual_hours": [],
+      "merged_epic": [],
+      "highlights": []
+    },
+    "8": {
+      "number": 8,
+      "name": "adaptive_expert",
+      "title": "Adaptive Expert",
+      "individual_hours": [],
+      "merged_epic": [],
+      "highlights": []
+    },
+    "9": {
+      "number": 9,
+      "name": "ultimate_mastery",
+      "title": "Ultimate Mastery",
+      "individual_hours": [],
+      "merged_epic": [],
+      "highlights": []
+    },
+    "10": {
+      "number": 10,
+      "name": "legendary_status",
+      "title": "Legendary Status",
+      "individual_hours": [],
+      "merged_epic": [],
+      "highlights": []
+    }
+  }
+}

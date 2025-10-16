@@ -1,0 +1,15 @@
+{
+  "epic_name": "Epic 001: Complete learning from zero",
+  "game": "Tetris",
+  "description": "Complete learning from zero - random play to competent performance",
+  "start_date": "2025-10-14",
+  "planned_hours": 10,
+  "status": "completed",
+  "environment": "tetris_gymnasium/Tetris",
+  "epic_number": 1,
+  "continues_from_epic": null,
+  "previous_model": null,
+  "training_type": "from_scratch",
+  "completion_date": "2025-10-14",
+  "final_model_path": "games\\tetris\\epic_001_from_scratch\\models\\final\\epic_001_final_model.zip"
+}

@@ -2,11 +2,11 @@ project_name: "youtube-10-ml-display"
 seed: 42
 
 paths:
-  videos_milestones: "video/milestones"
+  videos_milestones: "games/breakout/epic_001_from_scratch/videos/individual_hours"
   videos_eval: "video/eval"
   videos_parts: "video/render/parts"
-  logs_tb: "logs/tb"
-  models: "models/checkpoints"
+  logs_tb: "games/breakout/epic_001_from_scratch/logs/tensorboard"
+  models: "games/breakout/epic_001_from_scratch/models/checkpoints"
   ffmpeg_path: "C:\\Users\\steve\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.0-full_build\\bin\\ffmpeg.exe"
 
 game:
@@ -20,9 +20,9 @@ train:
   algo: "ppo"
   policy: "CnnPolicy"
   total_timesteps: 10000000
-  vec_envs: 8
-  n_steps: 128
-  batch_size: 256
+  vec_envs: 16 # Increased for better GPU utilization (RTX 3070 Ti can handle more)
+  n_steps: 256 # Increased for better GPU batch processing
+  batch_size: 512 # Increased for better GPU utilization
   learning_rate: 2.5e-4
   clip_range: 0.1
   ent_coef: 0.01

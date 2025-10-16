@@ -37,6 +37,9 @@ def register_ale_environments():
 _ale_registered = register_ale_environments()
 
 from .atari_wrappers import make_atari_env
+from .tetris_wrappers import make_tetris_env
+from .gameboy_wrappers import make_gameboy_env
+from .pyboy_wrappers import make_pyboy_env, get_rom_path
 
 
 def make_single_env(
@@ -66,13 +69,40 @@ def make_single_env(
         Function that creates the environment
     """
     def _init() -> gym.Env:
-        # Create Atari environment with wrappers
-        env = make_atari_env(
-            env_id=env_id,
-            config=config,
-            seed=seed + rank,
-            render_mode="rgb_array" if record_video else None
-        )
+        # Create environment with appropriate wrappers based on environment type
+        if "authentic" in env_id.lower() or "pyboy" in env_id.lower():
+            # PyBoy authentic Gameboy emulation
+            rom_path = get_rom_path(env_id)
+            env = make_pyboy_env(
+                rom_path=rom_path,
+                config=config,
+                seed=seed + rank,
+                render_mode="rgb_array" if record_video else None
+            )
+        elif "tetris" in env_id.lower() and "gymnasium" in env_id.lower():
+            # Tetris-Gymnasium (coded remake)
+            env = make_tetris_env(
+                env_id=env_id,
+                config=config,
+                seed=seed + rank,
+                render_mode="rgb_array" if record_video else None
+            )
+        elif "gameboy" in env_id.lower() or env_id.endswith("-GameBoy"):
+            # stable-retro Gameboy emulation
+            env = make_gameboy_env(
+                env_id=env_id,
+                config=config,
+                seed=seed + rank,
+                render_mode="rgb_array" if record_video else None
+            )
+        else:
+            # Assume Atari environment
+            env = make_atari_env(
+                env_id=env_id,
+                config=config,
+                seed=seed + rank,
+                render_mode="rgb_array" if record_video else None
+            )
         
         # Add episode statistics tracking
         env = RecordEpisodeStatistics(env)
