@@ -93,7 +93,9 @@ class MetricsDatabase:
                     description TEXT,
                     tags_json TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    process_pid INTEGER,
+                    process_paused INTEGER DEFAULT 0
                 )
             """)
             
@@ -552,6 +554,61 @@ class MetricsDatabase:
         except Exception as e:
             self.logger.error(f"Failed to get summary stats for {run_id}: {e}")
             return {}
+
+    def update_process_info(self, run_id: str, pid: int = None, paused: bool = None):
+        """Update process information for an experiment run."""
+        with self._lock:
+            conn = self._get_connection()
+
+            updates = []
+            params = []
+
+            if pid is not None:
+                updates.append("process_pid = ?")
+                params.append(pid)
+
+            if paused is not None:
+                updates.append("process_paused = ?")
+                params.append(1 if paused else 0)
+
+            if updates:
+                updates.append("updated_at = ?")
+                params.append(datetime.now().isoformat())
+                params.append(run_id)
+
+                query = f"UPDATE experiment_runs SET {', '.join(updates)} WHERE run_id = ?"
+                conn.execute(query, params)
+                conn.commit()
+
+    def get_paused_experiments(self) -> List[Dict[str, Any]]:
+        """Get all paused experiments that can be resumed."""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.execute("""
+                SELECT run_id, experiment_name, start_time, current_timestep,
+                       config_json, process_pid
+                FROM experiment_runs
+                WHERE process_paused = 1 AND status = 'running'
+                ORDER BY start_time DESC
+            """)
+
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def get_running_experiments_with_pids(self) -> List[Dict[str, Any]]:
+        """Get all running experiments with their process PIDs."""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.execute("""
+                SELECT run_id, experiment_name, start_time, current_timestep,
+                       process_pid, process_paused
+                FROM experiment_runs
+                WHERE status = 'running'
+                ORDER BY start_time DESC
+            """)
+
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     def close(self):
         """Close database connections."""

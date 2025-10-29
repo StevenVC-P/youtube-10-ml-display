@@ -57,6 +57,9 @@ class RetroMLSimple:
         self.root = ctk.CTk()
         self.root.title("Retro ML Desktop - Simple Process Manager")
         self.root.geometry("1000x700")
+
+        # Setup close handling
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         # Load presets
         self._load_presets()
@@ -67,6 +70,9 @@ class RetroMLSimple:
         # Start monitoring
         self.system_monitor.add_callback(self._update_dashboard)
         self.system_monitor.start_monitoring()
+
+        # Recover any paused processes after UI is setup
+        self.root.after(1000, self.recover_paused_processes)
         
         # Refresh processes initially
         self._refresh_processes()
@@ -1506,6 +1512,14 @@ class RetroMLSimple:
                 process = next((p for p in processes if p.id == process_id), None)
                 pid = process.pid if process else None
 
+                # Store PID in database for process recovery
+                if pid:
+                    self.ml_database.update_process_info(
+                        run_id=process_id,
+                        pid=pid,
+                        paused=False
+                    )
+
                 self.ml_collector.start_collection(
                     run_id=process_id,
                     log_source=get_logs,
@@ -1520,6 +1534,47 @@ class RetroMLSimple:
             print(f"❌ Error creating experiment run: {e}")
             self._append_log(f"Warning: Failed to create ML experiment tracking: {e}")
 
+    def on_closing(self):
+        """Handle application close event."""
+        # Check for running processes
+        running_processes = []
+        processes = self.process_manager.get_processes()
+
+        for process in processes:
+            if process.status == "running":
+                # Get progress from database
+                try:
+                    conn = self.ml_database.connection
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT current_timestep FROM experiment_runs WHERE run_id = ?", (process.id,))
+                    result = cursor.fetchone()
+                    progress = (result[0] / 1000000 * 100) if result and result[0] else 0.0
+                except:
+                    progress = 0.0
+
+                from tools.retro_ml_desktop.close_confirmation_dialog import ProcessInfo
+                running_processes.append(ProcessInfo(
+                    id=process.id,
+                    name=process.name,
+                    status=process.status,
+                    progress=progress
+                ))
+
+        if running_processes:
+            # Show confirmation dialog
+            from tools.retro_ml_desktop.close_confirmation_dialog import show_close_confirmation
+            result = show_close_confirmation(self.root, running_processes)
+
+            if result == "cancel":
+                return  # Don't close
+            elif result == "pause":
+                self.pause_all_training()
+            elif result == "stop":
+                self.stop_all_training()
+
+        # Close the application
+        self.cleanup_and_exit()
+
     def _show_cuda_diagnostics(self):
         """Show CUDA diagnostics dialog."""
         try:
@@ -1533,6 +1588,148 @@ class RetroMLSimple:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to run CUDA diagnostics: {e}")
             self._append_log(f"❌ Failed to run CUDA diagnostics: {e}")
+
+    def pause_all_training(self):
+        """Pause all running training processes."""
+        processes = self.process_manager.get_processes()
+
+        for process in processes:
+            if process.status == "running":
+                try:
+                    # Pause the process
+                    self.process_manager.pause_process(process.id)
+
+                    # Update database to mark as paused
+                    self.ml_database.update_process_info(
+                        run_id=process.id,
+                        pid=process.pid,
+                        paused=True
+                    )
+
+                    print(f"✅ Paused training: {process.id}")
+                except Exception as e:
+                    print(f"❌ Error pausing {process.id}: {e}")
+
+    def stop_all_training(self):
+        """Stop all running training processes."""
+        processes = self.process_manager.get_processes()
+
+        for process in processes:
+            if process.status == "running":
+                try:
+                    # Stop the process
+                    self.process_manager.stop_process(process.id)
+
+                    # Update database status
+                    self.ml_database.update_experiment_status(
+                        run_id=process.id,
+                        status="stopped",
+                        end_time=datetime.now().isoformat()
+                    )
+
+                    print(f"✅ Stopped training: {process.id}")
+                except Exception as e:
+                    print(f"❌ Error stopping {process.id}: {e}")
+
+    def recover_paused_processes(self):
+        """Recover paused processes when application starts."""
+        try:
+            paused_experiments = self.ml_database.get_paused_experiments()
+
+            if paused_experiments:
+                print(f"🔄 Found {len(paused_experiments)} paused experiments")
+
+                # Show recovery dialog
+                self.show_recovery_dialog(paused_experiments)
+        except Exception as e:
+            print(f"❌ Error recovering paused processes: {e}")
+
+    def show_recovery_dialog(self, paused_experiments):
+        """Show dialog to recover paused experiments."""
+        if not paused_experiments:
+            return
+
+        # Create simple recovery dialog
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Resume Paused Training?")
+        dialog.geometry("400x300")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (400 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (300 // 2)
+        dialog.geometry(f"400x300+{x}+{y}")
+
+        # Content
+        label = ctk.CTkLabel(
+            dialog,
+            text=f"Found {len(paused_experiments)} paused training sessions.\nWould you like to resume them?",
+            font=ctk.CTkFont(size=14)
+        )
+        label.pack(pady=20)
+
+        # List paused experiments
+        for exp in paused_experiments[:3]:  # Show first 3
+            exp_label = ctk.CTkLabel(
+                dialog,
+                text=f"• {exp['experiment_name']} ({exp['current_timestep']} steps)",
+                font=ctk.CTkFont(size=12)
+            )
+            exp_label.pack(pady=5)
+
+        # Buttons
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_frame.pack(pady=20)
+
+        def resume_all():
+            dialog.destroy()
+            self.resume_paused_experiments(paused_experiments)
+
+        def skip_all():
+            # Mark as no longer paused
+            for exp in paused_experiments:
+                self.ml_database.update_process_info(exp['run_id'], paused=False)
+            dialog.destroy()
+
+        resume_btn = ctk.CTkButton(button_frame, text="Resume All", command=resume_all)
+        resume_btn.pack(side="left", padx=10)
+
+        skip_btn = ctk.CTkButton(button_frame, text="Skip", command=skip_all)
+        skip_btn.pack(side="left", padx=10)
+
+    def resume_paused_experiments(self, experiments):
+        """Resume paused experiments."""
+        for exp in experiments:
+            try:
+                # TODO: Implement resume logic
+                # This would restart the training process from the last checkpoint
+                print(f"🔄 Resuming: {exp['experiment_name']}")
+
+                # For now, just mark as no longer paused
+                self.ml_database.update_process_info(exp['run_id'], paused=False)
+
+            except Exception as e:
+                print(f"❌ Error resuming {exp['run_id']}: {e}")
+
+    def cleanup_and_exit(self):
+        """Clean up resources and exit."""
+        try:
+            # Stop system monitoring
+            self.system_monitor.stop_monitoring()
+
+            # Stop ML collector
+            self.ml_collector.stop_all_collection()
+
+            # Close database
+            self.ml_database.close()
+
+            print("✅ Application cleanup complete")
+        except Exception as e:
+            print(f"❌ Error during cleanup: {e}")
+        finally:
+            self.root.destroy()
 
     def run(self):
         """Start the application."""
