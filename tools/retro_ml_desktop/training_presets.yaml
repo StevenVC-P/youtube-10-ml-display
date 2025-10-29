@@ -1,0 +1,88 @@
+# Training presets for direct Python process management
+presets:
+  epic_10_hour:
+    description: "Epic 10-Hour ML Journey - Full YouTube video generation"
+    total_timesteps: 10000000
+    vec_envs: 16
+    save_freq: 200000
+    target_hours: 10
+    milestone_videos: 10
+    video_length_hours: 1
+    extra_args: []
+    default_resources:
+      cpu_cores: 8
+      memory_limit_gb: 24
+      priority: "high"
+      gpu_id: "auto"
+
+  epic_5_hour:
+    description: "Epic 5-Hour ML Journey - Shorter video series"
+    total_timesteps: 5000000
+    vec_envs: 12
+    save_freq: 150000
+    target_hours: 5
+    milestone_videos: 5
+    video_length_hours: 1
+    extra_args: []
+    default_resources:
+      cpu_cores: 6
+      memory_limit_gb: 16
+      priority: "normal"
+      gpu_id: "auto"
+
+  atari_ppo:
+    description: "PPO training for Atari games - high performance"
+    total_timesteps: 4000000
+    vec_envs: 16
+    save_freq: 200000
+    target_hours: 4
+    milestone_videos: 4
+    video_length_hours: 1
+    extra_args: []
+    default_resources:
+      cpu_cores: 6
+      memory_limit_gb: 16
+      priority: "normal"
+      gpu_id: "auto"
+
+  atari_dqn:
+    description: "DQN training for Atari games - medium performance"
+    total_timesteps: 6000000
+    vec_envs: 8
+    save_freq: 300000
+    target_hours: 3
+    milestone_videos: 6
+    video_length_hours: 0.5
+    extra_args: []
+    default_resources:
+      cpu_cores: 4
+      memory_limit_gb: 12
+      priority: "normal"
+      gpu_id: "auto"
+
+  quick_test:
+    description: "Quick test run - for debugging"
+    total_timesteps: 100000
+    vec_envs: 2
+    save_freq: 50000
+    target_hours: 0.1
+    milestone_videos: 2
+    video_length_hours: 0.05
+    extra_args: ["--dryrun-seconds", "300"]
+    default_resources:
+      cpu_cores: 2
+      memory_limit_gb: 4
+      priority: "low"
+      gpu_id: "none"
+
+games:
+  - BreakoutNoFrameskip-v4
+  - PongNoFrameskip-v4
+  - SpaceInvadersNoFrameskip-v4
+  - AsteroidsNoFrameskip-v4
+  - MsPacmanNoFrameskip-v4
+  - FroggerNoFrameskip-v4
+
+algorithms:
+  - ppo
+  - dqn

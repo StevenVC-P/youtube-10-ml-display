@@ -183,3 +183,29 @@ archive/development_artifacts/*.md
 # FFmpeg (if downloaded locally)
 ffmpeg.exe
 ffprobe.exe
+
+# ML Experiment Tracking Database
+ml_experiments.db
+ml_experiments.db-shm
+ml_experiments.db-wal
+test_collector.db
+*.db-shm
+*.db-wal
+
+# ML Training Test Files
+test_ml_tracking.py
+test_cuda_diagnostics.py
+test_config.yaml
+
+# Desktop Application Shortcuts
+launch_ml_trainer.bat
+launch_ml_trainer.ps1
+create_shortcut.vbs
+
+# CustomTkinter and UI Cache
+.customtkinter/
+ui_cache/
+
+# CUDA Diagnostics Reports
+cuda_diagnostics_*.txt
+gpu_report_*.txt
