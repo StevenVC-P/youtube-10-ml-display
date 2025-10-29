@@ -167,8 +167,9 @@ class MetricsDatabase:
                         current_timestep, config_json, best_reward, final_reward,
                         convergence_timestep, model_path, log_path, video_path,
                         tensorboard_path, git_commit, python_version,
-                        dependencies_json, description, tags_json, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        dependencies_json, description, tags_json, created_at,
+                        updated_at, process_pid, process_paused
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     run.run_id, run.experiment_name,
                     run.start_time.isoformat(),
@@ -178,7 +179,10 @@ class MetricsDatabase:
                     run.model_path, run.log_path, run.video_path,
                     run.tensorboard_path, run.git_commit, run.python_version,
                     dependencies_json, run.description, tags_json,
-                    datetime.now().isoformat()
+                    datetime.now().isoformat(),  # created_at
+                    datetime.now().isoformat(),  # updated_at
+                    None,  # process_pid (will be updated separately)
+                    0      # process_paused (default to False/0)
                 ))
                 
                 conn.commit()
@@ -239,6 +243,30 @@ class MetricsDatabase:
         except Exception as e:
             self.logger.error(f"Failed to update experiment run {run_id}: {e}")
             return False
+
+    def get_experiment_run_field(self, run_id: str, field_name: str):
+        """
+        Get a specific field value from an experiment run.
+
+        Args:
+            run_id: Run ID to query
+            field_name: Name of the field to retrieve
+
+        Returns:
+            Field value or None if not found
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+
+                cursor.execute(f"SELECT {field_name} FROM experiment_runs WHERE run_id = ?", (run_id,))
+                result = cursor.fetchone()
+                return result[0] if result else None
+
+        except Exception as e:
+            self.logger.error(f"Failed to get field {field_name} for run {run_id}: {e}")
+            return None
     
     def add_training_metrics(self, metrics: TrainingMetrics) -> bool:
         """

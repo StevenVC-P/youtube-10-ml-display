@@ -390,7 +390,27 @@ class MetricsCollector:
                         # Store metrics in database
                         for metric in metrics_list:
                             self.database.add_training_metrics(metric)
-                        
+
+                        # Update experiment run with latest progress and best reward
+                        if metrics_list:
+                            latest_metric = metrics_list[-1]
+                            updates = {}
+
+                            if latest_metric.timestep:
+                                updates['current_timestep'] = latest_metric.timestep
+
+                            if latest_metric.progress_pct is not None:
+                                updates['progress_pct'] = latest_metric.progress_pct
+
+                            if latest_metric.episode_reward_mean is not None:
+                                # Get current best reward to compare
+                                current_best = self.database.get_experiment_run_field(run_id, 'best_reward')
+                                if current_best is None or latest_metric.episode_reward_mean > current_best:
+                                    updates['best_reward'] = latest_metric.episode_reward_mean
+
+                            if updates:
+                                self.database.update_experiment_run(run_id, **updates)
+
                         self.logger.debug(f"Collected {len(metrics_list)} metrics for run {run_id}")
             
             except Exception as e:
