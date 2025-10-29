@@ -172,6 +172,12 @@ class ProcessManager:
         config_data['train']['vec_envs'] = vec_envs
         config_data['train']['save_freq'] = save_freq
 
+        # CRITICAL FIX: Disable long video recording for desktop app
+        # The training script has hardcoded 1-hour video recording that blocks training
+        # Override milestone clip duration to be much shorter for desktop testing
+        config_data['recording']['milestone_clip_seconds'] = 10  # 10 seconds instead of 90
+        config_data['recording']['eval_clip_seconds'] = 10      # 10 seconds instead of 120
+
         # Update paths for this run (use custom output path if provided)
         if custom_output_path:
             # Use custom path for videos, keep logs and models in project

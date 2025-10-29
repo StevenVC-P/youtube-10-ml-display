@@ -264,10 +264,12 @@ def train_agent(
 
     # Epic 10-Hour Neural Network Learning Journey
     # 10 consecutive 1-hour videos showing complete learning progression
+    # Use config setting for clip duration (allows desktop app to override)
+    epic_clip_seconds = config.get('recording', {}).get('milestone_clip_seconds', 3600)
     epic_journey_callback = MLAnalyticsVideoCallback(
         config=config,
         milestones_pct=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],  # 10 milestones = 10 hours
-        clip_seconds=3600,  # 1 hour = 3600 seconds per video
+        clip_seconds=epic_clip_seconds,  # Use config setting (default 3600 for epic, 10 for desktop)
         fps=30,
         verbose=verbose
     )
