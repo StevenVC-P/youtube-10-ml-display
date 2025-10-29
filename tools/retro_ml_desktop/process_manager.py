@@ -278,7 +278,10 @@ class ProcessManager:
             )
             
             self.processes[run_id] = process_info
-            
+
+            # Start log streaming automatically for progress tracking
+            self._start_log_stream_for_process(run_id)
+
             return run_id
             
         except Exception as e:
@@ -542,12 +545,29 @@ class ProcessManager:
         """Internal method to stop log streaming."""
         if process_id in self._log_streams:
             del self._log_streams[process_id]
-        
+
         if process_id in self._log_callbacks:
             del self._log_callbacks[process_id]
 
         if process_id in self._log_buffers:
             del self._log_buffers[process_id]
+
+    def _start_log_stream_for_process(self, process_id: str):
+        """Start log streaming for a process to capture stdout for progress tracking."""
+        if process_id not in self.processes:
+            return
+
+        # Initialize log buffer
+        self._log_buffers[process_id] = ""
+
+        # Start log streaming thread
+        thread = threading.Thread(
+            target=self._log_stream_worker,
+            args=(process_id,),
+            daemon=True
+        )
+        self._log_streams[process_id] = thread
+        thread.start()
     
     def _log_stream_worker(self, process_id: str):
         """Worker thread for streaming process logs."""
