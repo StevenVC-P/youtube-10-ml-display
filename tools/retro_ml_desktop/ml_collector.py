@@ -399,8 +399,8 @@ class MetricsCollector:
                             if latest_metric.timestep:
                                 updates['current_timestep'] = latest_metric.timestep
 
-                            if latest_metric.progress_pct is not None:
-                                updates['progress_pct'] = latest_metric.progress_pct
+                            # Note: experiment_runs table doesn't have progress_pct column
+                            # Progress can be calculated from current_timestep / total_timesteps
 
                             if latest_metric.episode_reward_mean is not None:
                                 # Get current best reward to compare
