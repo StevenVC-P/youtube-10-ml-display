@@ -388,8 +388,40 @@ def main():
         print(f"\n>> Training complete! Checkpoint: {checkpoint_path}")
 
     except Exception as e:
-        print(f"ERROR: Training failed: {e}")
+        # Enhanced error handling with CUDA diagnostics
         import traceback
+        traceback_str = traceback.format_exc()
+
+        # Check if this is a CUDA-related error
+        error_message = str(e).lower()
+        is_cuda_error = any(keyword in error_message for keyword in [
+            'cuda', 'gpu', 'memory allocation', 'device', 'kernel'
+        ])
+
+        if is_cuda_error:
+            try:
+                # Import CUDA diagnostics (if available)
+                sys.path.insert(0, str(Path(__file__).parent.parent))
+                from tools.retro_ml_desktop.cuda_diagnostics import create_user_friendly_error_message
+
+                # Create user-friendly error message
+                friendly_message = create_user_friendly_error_message(e, traceback_str)
+                print(friendly_message)
+
+            except ImportError:
+                # Fallback to basic CUDA error handling
+                print(f"ERROR: CUDA/GPU Training failed: {e}")
+                print("\n🔧 QUICK SOLUTIONS TO TRY:")
+                print("  1. Reduce batch size (try 128 or 64 instead of 256)")
+                print("  2. Reduce number of environments (try 4 or 2 instead of 8)")
+                print("  3. Close other GPU applications")
+                print("  4. Restart the application")
+                print("  5. Use CPU training instead")
+                print("\n💡 Check GPU memory usage and update NVIDIA drivers.")
+        else:
+            print(f"ERROR: Training failed: {e}")
+
+        print(f"\n📋 Full error details:")
         traceback.print_exc()
         sys.exit(1)
 
