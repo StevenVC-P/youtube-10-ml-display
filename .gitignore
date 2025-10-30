@@ -44,11 +44,29 @@ env/
 .coverage
 htmlcov/
 
-# ML/AI specific
+# ML/AI specific - Model files and checkpoints
 models/checkpoints/*.zip
 models/checkpoints/*.pt
 models/checkpoints/*.pth
+models/checkpoints/run-*/**/*.zip
+models/checkpoints/run-*/**/*.pt
+models/checkpoints/run-*/**/*.pth
+models/checkpoints/milestones/*.zip
+models/checkpoints/milestones/*.pt
+models/checkpoints/milestones/*.pth
+models/checkpoints/*/milestones/*.zip
+models/checkpoints/*/milestones/*.pt
+models/checkpoints/*/milestones/*.pth
+models/checkpoints/latest.zip
+models/checkpoints/final_model.zip
+models/checkpoints/best_model.zip
+models/checkpoints/model.zip
+models/checkpoints/tmp*.zip
+models/checkpoints/temp*.zip
+models/checkpoints/test-run/*.zip
+models/checkpoints/long-test-run/*.zip
 !models/checkpoints/.gitkeep
+!models/checkpoints/milestones/.gitkeep
 
 # Logs
 logs/tb/*
@@ -68,12 +86,21 @@ video/render/parts/*
 video/demo/*
 video/realistic_gameplay/*
 video/test/*
+video/post_training*/*
+video/epic_series_*/*
+video/manual_*/*
+video/tetris_*/*
+# Temporary model files in video directories
+video/milestones/temp_model_*.zip
+video/milestones/temp_*.zip
+video/milestones/model_*.zip
 !video/milestones/.gitkeep
 !video/eval/.gitkeep
 !video/render/parts/.gitkeep
 !video/demo/.gitkeep
 !video/realistic_gameplay/.gitkeep
 !video/test/.gitkeep
+!video/post_training*/.gitkeep
 
 # Epic training data (large model files and training data)
 games/**/epic_*/models/**/*.zip
@@ -184,13 +211,20 @@ archive/development_artifacts/*.md
 ffmpeg.exe
 ffprobe.exe
 
-# ML Experiment Tracking Database
+# ML Experiment Tracking Database and related files
 ml_experiments.db
 ml_experiments.db-shm
 ml_experiments.db-wal
 test_collector.db
 *.db-shm
 *.db-wal
+# Database backups and temporary files
+*.db.backup
+*.db.bak
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
 
 # ML Training Test Files
 test_ml_tracking.py
@@ -209,3 +243,62 @@ ui_cache/
 # CUDA Diagnostics Reports
 cuda_diagnostics_*.txt
 gpu_report_*.txt
+
+# Post-Training Video Generation
+video/post_training/
+video/post_training_*/
+
+# Training Logs and Outputs
+logs/**/*.log
+logs/**/*.txt
+logs/training/*
+logs/metrics/*
+logs/debug/*
+
+# Temporary Training Files
+training_*.log
+training_*.txt
+training_output_*.txt
+metrics_*.json
+progress_*.json
+
+# Checkpoint and Model Temporary Files
+checkpoint_*.tmp
+model_*.tmp
+*.model.tmp
+*.checkpoint.tmp
+
+# ML Framework Cache and Temporary Files
+.torch/
+.tensorboard/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.cache/
+.pytest_cache/
+
+# Training Process Files
+*.pid
+*.lock
+training.lock
+process.lock
+
+# Training Outputs and Generated Content
+outputs/
+outputs/*/
+ui/models/
+ui/video/
+ui/logs/
+ui/backend/logs/
+ui/backend/venv/
+ui/frontend/node_modules/
+ui/frontend/.next/
+ui/frontend/dist/
+ui/frontend/build/
+
+# Additional ML Training Generated Files
+fix_stale_experiments.py
+update_database_schema.py
+test_ml_experiments.db
