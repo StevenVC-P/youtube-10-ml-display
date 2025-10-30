@@ -172,11 +172,11 @@ class ProcessManager:
         config_data['train']['vec_envs'] = vec_envs
         config_data['train']['save_freq'] = save_freq
 
-        # CRITICAL FIX: Disable long video recording for desktop app
-        # The training script has hardcoded 1-hour video recording that blocks training
-        # Override milestone clip duration to be much shorter for desktop testing
-        config_data['recording']['milestone_clip_seconds'] = 10  # 10 seconds instead of 90
-        config_data['recording']['eval_clip_seconds'] = 10      # 10 seconds instead of 120
+        # CRITICAL FIX: Disable video recording during training for desktop app
+        # Set milestone_clip_seconds to 0 to skip video recording and use checkpoints instead
+        # Videos can be generated post-training using PostTrainingVideoGenerator
+        config_data['recording']['milestone_clip_seconds'] = 0   # 0 = skip video recording, save checkpoints
+        config_data['recording']['eval_clip_seconds'] = 0       # 0 = skip eval videos too
 
         # Update paths for this run (use custom output path if provided)
         if custom_output_path:
@@ -818,3 +818,60 @@ def get_recommended_resources() -> Dict[str, any]:
         'total_gpus': len(gpu_info),
         'available_gpus': len(available_gpus)
     }
+
+
+def generate_post_training_videos(
+    config_path: str,
+    model_dir: str,
+    output_dir: str = "video/post_training",
+    clip_seconds: int = 10,
+    verbose: int = 1
+) -> bool:
+    """
+    Generate milestone videos after training completes using saved checkpoints.
+
+    Args:
+        config_path: Path to the training config file
+        model_dir: Directory containing model checkpoints
+        output_dir: Output directory for generated videos
+        clip_seconds: Length of each video clip in seconds
+        verbose: Verbosity level
+
+    Returns:
+        True if video generation succeeded, False otherwise
+    """
+    try:
+        # Import the post-training video generator
+        project_root = Path(__file__).parent.parent.parent
+        sys.path.insert(0, str(project_root))
+
+        from training.post_training_video_generator import PostTrainingVideoGenerator
+
+        # Load config
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        # Create video generator
+        generator = PostTrainingVideoGenerator(
+            config=config,
+            model_dir=Path(model_dir),
+            output_dir=Path(output_dir),
+            clip_seconds=clip_seconds,
+            fps=30,
+            verbose=verbose
+        )
+
+        # Generate videos
+        generated_videos = generator.generate_all_videos()
+
+        if verbose >= 1:
+            print(f"[PostVideo] Generated {len(generated_videos)} videos")
+            for video_path in generated_videos:
+                print(f"[PostVideo] 📹 {video_path.name}")
+
+        return len(generated_videos) > 0
+
+    except Exception as e:
+        if verbose >= 1:
+            print(f"[PostVideo] Error generating videos: {e}")
+        return False

@@ -38,6 +38,7 @@ from agents.algo_factory import create_algo, print_system_info, get_algorithm_in
 from training.callbacks import MilestoneVideoCallback, TrainingProgressCallback
 from training.ml_analytics_callback import MLAnalyticsVideoCallback
 from training.hour_video_callback import HourVideoCallback
+from training.milestone_checkpoint_callback import MilestoneCheckpointCallback
 
 
 class TimedCheckpointCallback(BaseCallback):
@@ -263,17 +264,34 @@ def train_agent(
     callbacks.append(checkpoint_callback)
 
     # Epic 10-Hour Neural Network Learning Journey
-    # 10 consecutive 1-hour videos showing complete learning progression
-    # Use config setting for clip duration (allows desktop app to override)
+    # Check if we should skip video recording (for desktop app)
     epic_clip_seconds = config.get('recording', {}).get('milestone_clip_seconds', 3600)
-    epic_journey_callback = MLAnalyticsVideoCallback(
-        config=config,
-        milestones_pct=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],  # 10 milestones = 10 hours
-        clip_seconds=epic_clip_seconds,  # Use config setting (default 3600 for epic, 10 for desktop)
-        fps=30,
-        verbose=verbose
-    )
-    callbacks.append(epic_journey_callback)
+
+    if epic_clip_seconds == 0:
+        # Desktop app mode: Skip video recording, save checkpoints instead
+        milestone_checkpoint_callback = MilestoneCheckpointCallback(
+            save_path=str(Path(models_path) / "milestones"),
+            total_timesteps=total_timesteps,
+            milestones_pct=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+            verbose=verbose
+        )
+        callbacks.append(milestone_checkpoint_callback)
+
+        if verbose >= 1:
+            print("[Training] Using checkpoint-only mode (no video recording during training)")
+    else:
+        # Production mode: Record videos during training
+        epic_journey_callback = MLAnalyticsVideoCallback(
+            config=config,
+            milestones_pct=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],  # 10 milestones = 10 hours
+            clip_seconds=epic_clip_seconds,  # Use config setting (default 3600 for epic, 10 for desktop)
+            fps=30,
+            verbose=verbose
+        )
+        callbacks.append(epic_journey_callback)
+
+        if verbose >= 1:
+            print(f"[Training] Using video recording mode ({epic_clip_seconds}s clips)")
 
     # Training progress callback
     progress_callback = TrainingProgressCallback(
