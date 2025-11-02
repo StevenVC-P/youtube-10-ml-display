@@ -359,60 +359,82 @@ class MLPlotter:
         # Plot reward data
         rewards = [m.episode_reward_mean for m in metrics if m.episode_reward_mean is not None]
         reward_steps = [m.timestep for m in metrics if m.episode_reward_mean is not None]
-        
+
         if rewards:
-            self.axes['reward'].plot(reward_steps, rewards, color=color, label=run_label, linewidth=2)
-            
+            # Use scatter for single points, line for multiple points
+            if len(rewards) == 1:
+                self.axes['reward'].scatter(reward_steps, rewards, color=color, label=run_label, s=50, zorder=5)
+            else:
+                self.axes['reward'].plot(reward_steps, rewards, color=color, label=run_label, linewidth=2, marker='o', markersize=4)
+
             # Add moving average
             if len(rewards) > 10:
                 window = min(50, len(rewards) // 4)
                 moving_avg = self._calculate_moving_average(rewards, window)
-                self.axes['reward'].plot(reward_steps, moving_avg, color=color, alpha=0.7, 
+                self.axes['reward'].plot(reward_steps, moving_avg, color=color, alpha=0.7,
                                        linestyle='--', label=f'{run_label} (MA)')
         
         # Plot loss data
         policy_losses = [m.policy_loss for m in metrics if m.policy_loss is not None]
         value_losses = [m.value_loss for m in metrics if m.value_loss is not None]
         loss_steps = [m.timestep for m in metrics if m.policy_loss is not None or m.value_loss is not None]
-        
+
         if policy_losses:
-            self.axes['loss'].plot(loss_steps[:len(policy_losses)], policy_losses, 
-                                 color=color, label=f'{run_label} Policy', linewidth=1.5)
-        
+            policy_steps = [m.timestep for m in metrics if m.policy_loss is not None]
+            if len(policy_losses) == 1:
+                self.axes['loss'].scatter(policy_steps, policy_losses, color=color, label=f'{run_label} Policy', s=50, zorder=5)
+            else:
+                self.axes['loss'].plot(policy_steps, policy_losses, color=color, label=f'{run_label} Policy', linewidth=1.5, marker='o', markersize=3)
+
         if value_losses:
-            self.axes['loss'].plot(loss_steps[:len(value_losses)], value_losses, 
-                                 color=color, alpha=0.7, linestyle=':', 
-                                 label=f'{run_label} Value', linewidth=1.5)
+            value_steps = [m.timestep for m in metrics if m.value_loss is not None]
+            if len(value_losses) == 1:
+                self.axes['loss'].scatter(value_steps, value_losses, color=color, alpha=0.7, label=f'{run_label} Value', s=50, marker='s', zorder=5)
+            else:
+                self.axes['loss'].plot(value_steps, value_losses, color=color, alpha=0.7, linestyle=':',
+                                     label=f'{run_label} Value', linewidth=1.5, marker='s', markersize=3)
         
         # Plot learning dynamics
         learning_rates = [m.learning_rate for m in metrics if m.learning_rate is not None]
         kl_divergences = [m.kl_divergence for m in metrics if m.kl_divergence is not None]
-        
+
         if learning_rates:
             lr_steps = [m.timestep for m in metrics if m.learning_rate is not None]
-            self.axes['learning'].plot(lr_steps, learning_rates, color=color, 
-                                     label=f'{run_label} LR', linewidth=1.5)
-        
+            if len(learning_rates) == 1:
+                self.axes['learning'].scatter(lr_steps, learning_rates, color=color, label=f'{run_label} LR', s=50, zorder=5)
+            else:
+                self.axes['learning'].plot(lr_steps, learning_rates, color=color,
+                                         label=f'{run_label} LR', linewidth=1.5, marker='o', markersize=3)
+
         if kl_divergences:
             kl_steps = [m.timestep for m in metrics if m.kl_divergence is not None]
             # Scale KL divergence for better visualization
             scaled_kl = [kl * 1000 for kl in kl_divergences]  # Scale by 1000
-            self.axes['learning'].plot(kl_steps, scaled_kl, color=color, alpha=0.7,
-                                     linestyle='--', label=f'{run_label} KL×1000', linewidth=1.5)
+            if len(kl_divergences) == 1:
+                self.axes['learning'].scatter(kl_steps, scaled_kl, color=color, alpha=0.7, label=f'{run_label} KL×1000', s=50, marker='s', zorder=5)
+            else:
+                self.axes['learning'].plot(kl_steps, scaled_kl, color=color, alpha=0.7,
+                                         linestyle='--', label=f'{run_label} KL×1000', linewidth=1.5, marker='s', markersize=3)
         
         # Plot system performance
         fps_data = [m.fps for m in metrics if m.fps is not None]
         cpu_data = [m.cpu_percent for m in metrics if m.cpu_percent is not None]
-        
+
         if fps_data:
             fps_steps = [m.timestep for m in metrics if m.fps is not None]
-            self.axes['system'].plot(fps_steps, fps_data, color=color, 
-                                   label=f'{run_label} FPS', linewidth=1.5)
-        
+            if len(fps_data) == 1:
+                self.axes['system'].scatter(fps_steps, fps_data, color=color, label=f'{run_label} FPS', s=50, zorder=5)
+            else:
+                self.axes['system'].plot(fps_steps, fps_data, color=color,
+                                       label=f'{run_label} FPS', linewidth=1.5, marker='o', markersize=3)
+
         if cpu_data:
             cpu_steps = [m.timestep for m in metrics if m.cpu_percent is not None]
-            self.axes['system'].plot(cpu_steps, cpu_data, color=color, alpha=0.7,
-                                   linestyle=':', label=f'{run_label} CPU%', linewidth=1.5)
+            if len(cpu_data) == 1:
+                self.axes['system'].scatter(cpu_steps, cpu_data, color=color, alpha=0.7, label=f'{run_label} CPU%', s=50, marker='s', zorder=5)
+            else:
+                self.axes['system'].plot(cpu_steps, cpu_data, color=color, alpha=0.7,
+                                       linestyle=':', label=f'{run_label} CPU%', linewidth=1.5, marker='s', markersize=3)
     
     def _calculate_moving_average(self, data: List[float], window: int) -> List[float]:
         """Calculate moving average with specified window size."""
