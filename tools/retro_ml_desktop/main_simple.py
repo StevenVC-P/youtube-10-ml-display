@@ -1437,8 +1437,8 @@ class RetroMLSimple:
             # Refresh process list
             self._refresh_processes()
 
-            # Switch to logs tab
-            self.tabview.set("Logs")
+            # Switch to Training Processes tab to show the new process
+            self.tabview.set("Training Processes")
 
             # Create friendly log message
             game_display = config.get('game_display', config['game'])
