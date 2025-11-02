@@ -390,15 +390,7 @@ class RetroMLSimple:
 
         # Auto-refresh videos when tab is opened
         self._refresh_videos()
-        """Setup the logs tab with log viewer."""
-        # Log text area
-        self.log_text = ctk.CTkTextbox(self.logs_tab, wrap="word")
-        self.log_text.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Clear logs button
-        clear_btn = ctk.CTkButton(self.logs_tab, text="Clear Logs", command=self._clear_logs)
-        clear_btn.pack(pady=5)
-    
     def _update_dashboard(self, metrics: SystemMetrics):
         """Update sidebar with new metrics."""
         def update_ui():
@@ -659,17 +651,11 @@ class RetroMLSimple:
         # Refresh system monitor after cleanup
         self._update_system_status()
 
-    def _clear_logs(self):
-        """Clear the log display."""
-        self.log_text.delete("1.0", "end")
-
     def _append_log(self, message: str):
-        """Append a message to the log display."""
-        def update_ui():
-            self.log_text.insert("end", message + "\n")
-            self.log_text.see("end")
-
-        self.root.after(0, update_ui)
+        """Append a message to the log (uses Python logging system)."""
+        # Use Python's logging system instead of UI widget
+        # This allows logs to be captured in terminal and log file
+        logging.info(message)
 
     def _refresh_progress(self):
         """Refresh the progress tracking display."""
