@@ -9,6 +9,7 @@ import os
 import sys
 import yaml
 import threading
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -32,6 +33,16 @@ class RetroMLSimple:
     """Simple ML training process manager - no Docker required."""
     
     def __init__(self):
+        # Configure logging to show in terminal
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.StreamHandler(),  # This will output to terminal
+                logging.FileHandler('ml_dashboard.log')  # Also save to file
+            ]
+        )
+
         # Set appearance mode and color theme
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")

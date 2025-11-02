@@ -519,12 +519,24 @@ class ProcessManager:
 
     def get_recent_logs(self, process_id: str) -> str:
         """Get recent logs from the log buffer for progress parsing."""
+        import logging
+
         if process_id not in self._log_buffers:
+            logging.info(f"No log buffer found for process {process_id}")
             return ""
 
         # Return the last 2000 characters of logs for parsing
         log_buffer = self._log_buffers[process_id]
-        return log_buffer[-2000:] if len(log_buffer) > 2000 else log_buffer
+        buffer_length = len(log_buffer)
+        result = log_buffer[-2000:] if buffer_length > 2000 else log_buffer
+
+        logging.info(f"get_recent_logs for {process_id}: buffer_length={buffer_length}, returning {len(result)} chars")
+        if result:
+            # Show first 200 chars of logs for debugging
+            preview = result[:200].replace('\n', '\\n')
+            logging.info(f"Log preview: {preview}...")
+
+        return result
     
     def start_log_stream(self, process_id: str, callback: Callable[[str], None]):
         """Start streaming logs from a process."""

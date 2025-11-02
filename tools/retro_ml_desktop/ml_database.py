@@ -460,8 +460,54 @@ class MetricsDatabase:
     
     def get_latest_metrics(self, run_id: str) -> Optional[TrainingMetrics]:
         """Get the most recent metrics for a run."""
-        metrics = self.get_training_metrics(run_id, limit=1)
-        return metrics[0] if metrics else None
+        try:
+            with self._lock:
+                conn = self._get_connection()
+
+                # Query for the latest metrics by ordering timestep DESC
+                cursor = conn.execute("""
+                    SELECT * FROM training_metrics
+                    WHERE run_id = ?
+                    ORDER BY timestep DESC
+                    LIMIT 1
+                """, (run_id,))
+
+                row = cursor.fetchone()
+
+                if row:
+                    return TrainingMetrics(
+                        run_id=row['run_id'],
+                        timestep=row['timestep'],
+                        timestamp=datetime.fromisoformat(row['timestamp']),
+                        episode_count=row['episode_count'],
+                        total_timesteps=row['total_timesteps'],
+                        progress_pct=row['progress_pct'],
+                        episode_reward_mean=row['episode_reward_mean'],
+                        episode_reward_std=row['episode_reward_std'],
+                        episode_length_mean=row['episode_length_mean'],
+                        policy_loss=row['policy_loss'],
+                        value_loss=row['value_loss'],
+                        entropy_loss=row['entropy_loss'],
+                        total_loss=row['total_loss'],
+                        learning_rate=row['learning_rate'],
+                        kl_divergence=row['kl_divergence'],
+                        clip_fraction=row['clip_fraction'],
+                        explained_variance=row['explained_variance'],
+                        fps=row['fps'],
+                        steps_per_second=row['steps_per_second'],
+                        cpu_percent=row['cpu_percent'],
+                        memory_mb=row['memory_mb'],
+                        gpu_percent=row['gpu_percent'],
+                        gpu_memory_mb=row['gpu_memory_mb'],
+                        gradient_norm=row['gradient_norm'],
+                        weight_norm=row['weight_norm']
+                    )
+
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Failed to get latest metrics for {run_id}: {e}")
+            return None
     
     def delete_experiment_run(self, run_id: str) -> bool:
         """

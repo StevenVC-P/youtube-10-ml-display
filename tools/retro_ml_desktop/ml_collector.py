@@ -54,41 +54,57 @@ class LogParser:
             )
         }
         
-        # Loss and reward patterns
+        # Loss and reward patterns - Updated for Stable-Baselines3 table format
         self.metric_patterns = {
-            # ep_rew_mean | 5.64
+            # |    ep_rew_mean         | 5.64         |
             'episode_reward': re.compile(
-                r'ep_rew_mean\s*[|\s]*([+-]?\d*\.?\d+)'
+                r'\|\s*ep_rew_mean\s*\|\s*([+-]?\d*\.?\d+)\s*\|'
             ),
-            
-            # policy_loss | 0.0234
+
+            # |    policy_gradient_loss | -0.00158     |
             'policy_loss': re.compile(
-                r'policy_loss\s*[|\s]*([+-]?\d*\.?\d+)'
+                r'\|\s*policy_gradient_loss\s*\|\s*([+-]?\d*\.?\d+)\s*\|'
             ),
-            
-            # value_loss | 0.0156
+
+            # |    value_loss           | 0.295        |
             'value_loss': re.compile(
-                r'value_loss\s*[|\s]*([+-]?\d*\.?\d+)'
+                r'\|\s*value_loss\s*\|\s*([+-]?\d*\.?\d+)\s*\|'
             ),
-            
-            # entropy_loss | 0.0089
+
+            # |    entropy_loss         | 0.0089       |
             'entropy_loss': re.compile(
-                r'entropy_loss\s*[|\s]*([+-]?\d*\.?\d+)'
+                r'\|\s*entropy_loss\s*\|\s*([+-]?\d*\.?\d+)\s*\|'
             ),
-            
-            # learning_rate | 0.0003
+
+            # |    learning_rate        | 0.0003       |
             'learning_rate': re.compile(
-                r'learning_rate\s*[|\s]*([+-]?\d*\.?\d+)'
+                r'\|\s*learning_rate\s*\|\s*([+-]?\d*\.?\d+)\s*\|'
             ),
-            
-            # kl_divergence | 0.0012
+
+            # |    kl_divergence        | 0.0012       |
             'kl_divergence': re.compile(
-                r'kl_divergence\s*[|\s]*([+-]?\d*\.?\d+)'
+                r'\|\s*kl_divergence\s*\|\s*([+-]?\d*\.?\d+)\s*\|'
             ),
-            
-            # explained_variance | 0.85
+
+            # |    explained_variance   | 0.85         |
             'explained_variance': re.compile(
-                r'explained_variance\s*[|\s]*([+-]?\d*\.?\d+)'
+                r'\|\s*explained_variance\s*\|\s*([+-]?\d*\.?\d+)\s*\|'
+            ),
+
+            # Additional SB3 metrics
+            # |    fps                  | 631          |
+            'fps': re.compile(
+                r'\|\s*fps\s*\|\s*([+-]?\d*\.?\d+)\s*\|'
+            ),
+
+            # |    total_timesteps      | 1024         |
+            'total_timesteps': re.compile(
+                r'\|\s*total_timesteps\s*\|\s*([+-]?\d*\.?\d+)\s*\|'
+            ),
+
+            # |    iterations           | 1            |
+            'iterations': re.compile(
+                r'\|\s*iterations\s*\|\s*([+-]?\d*\.?\d+)\s*\|'
             )
         }
     
@@ -105,11 +121,12 @@ class LogParser:
         """
         metrics_list = []
         lines = log_text.split('\n')
-        
+        logging.info(f"Parsing {len(lines)} lines for {run_id}")
+
         # Current metric being built
         current_metric = None
-        
-        for line in lines:
+
+        for line_num, line in enumerate(lines):
             line = line.strip()
             if not line:
                 continue
@@ -165,28 +182,72 @@ class LogParser:
                 match = pattern.search(line)
                 if match:
                     value = float(match.group(1))
-                    
+                    logging.info(f"Found {metric_name}={value} in line: {line[:100]}")
+                elif 'fps' in line and metric_name == 'fps':
+                    logging.info(f"FPS pattern failed to match line: {line}")
+                elif 'total_timesteps' in line and metric_name == 'total_timesteps':
+                    logging.info(f"Total timesteps pattern failed to match line: {line}")
+                elif 'value_loss' in line and metric_name == 'value_loss':
+                    logging.info(f"Value loss pattern failed to match line: {line}")
+
+                if match:
+                    value = float(match.group(1))
+
+                    # Create new metric if we don't have one yet
+                    if not current_metric:
+                        current_metric = TrainingMetrics(
+                            run_id=run_id,
+                            timestep=0,  # Will be updated when we find timesteps
+                            timestamp=datetime.now(),
+                            episode_count=0,
+                            total_timesteps=0,
+                            progress_pct=0.0
+                        )
+
                     # Update current metric
-                    if current_metric:
-                        if metric_name == 'episode_reward':
-                            current_metric.episode_reward_mean = value
-                        elif metric_name == 'policy_loss':
-                            current_metric.policy_loss = value
-                        elif metric_name == 'value_loss':
-                            current_metric.value_loss = value
-                        elif metric_name == 'entropy_loss':
-                            current_metric.entropy_loss = value
-                        elif metric_name == 'learning_rate':
-                            current_metric.learning_rate = value
-                        elif metric_name == 'kl_divergence':
-                            current_metric.kl_divergence = value
-                        elif metric_name == 'explained_variance':
-                            current_metric.explained_variance = value
+                    if metric_name == 'episode_reward':
+                        current_metric.episode_reward_mean = value
+                    elif metric_name == 'policy_loss':
+                        current_metric.policy_loss = value
+                    elif metric_name == 'value_loss':
+                        current_metric.value_loss = value
+                    elif metric_name == 'entropy_loss':
+                        current_metric.entropy_loss = value
+                    elif metric_name == 'learning_rate':
+                        current_metric.learning_rate = value
+                    elif metric_name == 'kl_divergence':
+                        current_metric.kl_divergence = value
+                    elif metric_name == 'explained_variance':
+                        current_metric.explained_variance = value
+                    elif metric_name == 'fps':
+                        current_metric.fps = value
+                        current_metric.steps_per_second = value
+                    elif metric_name == 'total_timesteps':
+                        # This is the current timestep, not the target total
+                        current_metric.timestep = int(value)
+                        # Keep the target total timesteps (4M) for progress calculation
+                        if current_metric.total_timesteps == 0:
+                            current_metric.total_timesteps = 4000000  # Default target
+                    elif metric_name == 'iterations':
+                        current_metric.episode_count = int(value)
         
-        # Add completed metric to list
+        # Calculate progress percentage if we have timestep info
         if current_metric and current_metric.timestep > 0:
+            # Ensure we have a reasonable target total timesteps
+            if current_metric.total_timesteps == 0 or current_metric.total_timesteps <= current_metric.timestep:
+                # Default to 4M timesteps if not specified (common for Atari)
+                current_metric.total_timesteps = 4000000
+
+            current_metric.progress_pct = (current_metric.timestep / current_metric.total_timesteps) * 100.0
+
             metrics_list.append(current_metric)
-        
+
+            # Debug logging
+            logging.info(f"Parsed metric for {run_id}: timestep={current_metric.timestep}, "
+                        f"progress={current_metric.progress_pct:.2f}%, "
+                        f"reward={current_metric.episode_reward_mean}, "
+                        f"fps={current_metric.fps}")
+
         return metrics_list
 
 
@@ -369,14 +430,22 @@ class MetricsCollector:
             try:
                 # Get new log content
                 current_logs = log_source()
-                
+                self.logger.info(f"Collection loop for {run_id}: got {len(current_logs)} chars from log_source")
+
                 # Only process new log content
                 if len(current_logs) > last_log_position:
                     new_logs = current_logs[last_log_position:]
                     last_log_position = len(current_logs)
-                    
+
+                    self.logger.info(f"Processing {len(new_logs)} new log chars for {run_id}")
+                    if new_logs:
+                        # Show preview of new logs
+                        preview = new_logs[:200].replace('\n', '\\n')
+                        self.logger.info(f"New logs preview: {preview}...")
+
                     # Parse metrics from new logs
                     metrics_list = self.log_parser.parse_log_chunk(new_logs, run_id)
+                    self.logger.info(f"Parsed {len(metrics_list)} metrics from logs for {run_id}")
                     
                     # Add system metrics to latest metric
                     if metrics_list:
