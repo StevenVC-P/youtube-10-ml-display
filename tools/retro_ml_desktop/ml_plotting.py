@@ -55,9 +55,14 @@ class MLPlotter:
         self.database = database
 
         # Plotting configuration
-        self.figure_size = (12, 8)
+        self.figure_size = (14, 9)
         self.dpi = 100
-        self.style = 'dark_background'
+        self.style = 'seaborn-v0_8-darkgrid'  # Better default style
+
+        # Visual settings
+        self.smoothing_window = 20  # Smoothing window for noisy data
+        self.show_raw_data = False  # Show raw data points or just smoothed line
+        self.marker_threshold = 100  # Don't show markers if more than this many points
 
         # Data
         self.selected_runs = set()
@@ -85,10 +90,14 @@ class MLPlotter:
     def _setup_plotting(self):
         """Setup the matplotlib plotting interface."""
         # Set matplotlib style
-        plt.style.use(self.style)
+        try:
+            plt.style.use(self.style)
+        except:
+            # Fallback to default if style not available
+            plt.style.use('default')
 
-        # Create figure
-        self.figure = Figure(figsize=self.figure_size, dpi=self.dpi, facecolor='#2b2b2b')
+        # Create figure with better styling
+        self.figure = Figure(figsize=self.figure_size, dpi=self.dpi, facecolor='#1e1e1e')
 
         # Create canvas
         self.canvas = FigureCanvasTkAgg(self.figure, self.parent)
@@ -151,37 +160,62 @@ class MLPlotter:
     
     def _configure_axes(self):
         """Configure axes properties and styling."""
+        from matplotlib.ticker import FuncFormatter
+
+        # Custom formatter for readable numbers (e.g., 1M instead of 1e6)
+        def format_thousands(x, pos):
+            if x >= 1_000_000:
+                return f'{x/1_000_000:.1f}M'
+            elif x >= 1_000:
+                return f'{x/1_000:.0f}K'
+            else:
+                return f'{x:.0f}'
+
+        formatter = FuncFormatter(format_thousands)
+
         # Reward plot
-        self.axes['reward'].set_title('Episode Reward', fontsize=12, fontweight='bold', color='white')
-        self.axes['reward'].set_xlabel('Timesteps', color='white')
-        self.axes['reward'].set_ylabel('Reward', color='white')
-        self.axes['reward'].grid(True, alpha=0.3)
-        
+        self.axes['reward'].set_title('Episode Reward', fontsize=14, fontweight='bold',
+                                     color='#e0e0e0', pad=10)
+        self.axes['reward'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
+        self.axes['reward'].set_ylabel('Reward', color='#b0b0b0', fontsize=11)
+        self.axes['reward'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
+        self.axes['reward'].xaxis.set_major_formatter(formatter)
+        self.axes['reward'].set_facecolor('#252525')
+
         # Loss plot
-        self.axes['loss'].set_title('Training Losses', fontsize=12, fontweight='bold', color='white')
-        self.axes['loss'].set_xlabel('Timesteps', color='white')
-        self.axes['loss'].set_ylabel('Loss', color='white')
-        self.axes['loss'].grid(True, alpha=0.3)
-        
+        self.axes['loss'].set_title('Training Losses', fontsize=14, fontweight='bold',
+                                   color='#e0e0e0', pad=10)
+        self.axes['loss'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
+        self.axes['loss'].set_ylabel('Loss', color='#b0b0b0', fontsize=11)
+        self.axes['loss'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
+        self.axes['loss'].xaxis.set_major_formatter(formatter)
+        self.axes['loss'].set_facecolor('#252525')
+
         # Learning dynamics plot
-        self.axes['learning'].set_title('Learning Dynamics', fontsize=12, fontweight='bold', color='white')
-        self.axes['learning'].set_xlabel('Timesteps', color='white')
-        self.axes['learning'].set_ylabel('Value', color='white')
-        self.axes['learning'].grid(True, alpha=0.3)
-        
+        self.axes['learning'].set_title('Learning Dynamics', fontsize=14, fontweight='bold',
+                                       color='#e0e0e0', pad=10)
+        self.axes['learning'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
+        self.axes['learning'].set_ylabel('Value', color='#b0b0b0', fontsize=11)
+        self.axes['learning'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
+        self.axes['learning'].xaxis.set_major_formatter(formatter)
+        self.axes['learning'].set_facecolor('#252525')
+
         # System performance plot
-        self.axes['system'].set_title('System Performance', fontsize=12, fontweight='bold', color='white')
-        self.axes['system'].set_xlabel('Timesteps', color='white')
-        self.axes['system'].set_ylabel('FPS / Utilization %', color='white')
-        self.axes['system'].grid(True, alpha=0.3)
-        
-        # Style all axes
+        self.axes['system'].set_title('System Performance', fontsize=14, fontweight='bold',
+                                     color='#e0e0e0', pad=10)
+        self.axes['system'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
+        self.axes['system'].set_ylabel('FPS / Utilization %', color='#b0b0b0', fontsize=11)
+        self.axes['system'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
+        self.axes['system'].xaxis.set_major_formatter(formatter)
+        self.axes['system'].set_facecolor('#252525')
+
+        # Style all axes with better colors
         for ax in self.axes.values():
-            ax.tick_params(colors='white')
-            ax.spines['bottom'].set_color('white')
-            ax.spines['top'].set_color('white')
-            ax.spines['right'].set_color('white')
-            ax.spines['left'].set_color('white')
+            ax.tick_params(colors='#909090', labelsize=9)
+            # Subtle spine colors
+            for spine in ax.spines.values():
+                spine.set_color('#404040')
+                spine.set_linewidth(0.5)
     
     def _plot_empty_state(self):
         """Plot empty state with instructions."""
@@ -363,36 +397,81 @@ class MLPlotter:
         if rewards:
             # Use scatter for single points, line for multiple points
             if len(rewards) == 1:
-                self.axes['reward'].scatter(reward_steps, rewards, color=color, label=run_label, s=50, zorder=5)
+                self.axes['reward'].scatter(reward_steps, rewards, color=color, label=run_label,
+                                          s=80, zorder=5, edgecolors='white', linewidths=1)
             else:
-                self.axes['reward'].plot(reward_steps, rewards, color=color, label=run_label, linewidth=2, marker='o', markersize=4)
+                # Determine if we should show markers based on data density
+                show_markers = len(rewards) < self.marker_threshold
+                marker = 'o' if show_markers else None
+                markersize = 3 if show_markers else 0
 
-            # Add moving average
-            if len(rewards) > 10:
-                window = min(50, len(rewards) // 4)
-                moving_avg = self._calculate_moving_average(rewards, window)
-                self.axes['reward'].plot(reward_steps, moving_avg, color=color, alpha=0.7,
-                                       linestyle='--', label=f'{run_label} (MA)')
+                # Plot raw data with transparency if we have smoothing
+                if len(rewards) > self.smoothing_window and not self.show_raw_data:
+                    # Show faint raw data
+                    self.axes['reward'].plot(reward_steps, rewards, color=color, alpha=0.2,
+                                           linewidth=0.8, zorder=1)
+
+                    # Calculate and plot smoothed data
+                    smoothed = self._calculate_exponential_moving_average(rewards, self.smoothing_window)
+                    self.axes['reward'].plot(reward_steps, smoothed, color=color, label=run_label,
+                                           linewidth=2.5, marker=marker, markersize=markersize,
+                                           zorder=3, markevery=max(1, len(rewards)//20))
+                else:
+                    # Just plot the data
+                    self.axes['reward'].plot(reward_steps, rewards, color=color, label=run_label,
+                                           linewidth=2, marker=marker, markersize=markersize,
+                                           markevery=max(1, len(rewards)//20))
         
         # Plot loss data
         policy_losses = [m.policy_loss for m in metrics if m.policy_loss is not None]
         value_losses = [m.value_loss for m in metrics if m.value_loss is not None]
-        loss_steps = [m.timestep for m in metrics if m.policy_loss is not None or m.value_loss is not None]
 
         if policy_losses:
             policy_steps = [m.timestep for m in metrics if m.policy_loss is not None]
+            show_markers = len(policy_losses) < self.marker_threshold
+
             if len(policy_losses) == 1:
-                self.axes['loss'].scatter(policy_steps, policy_losses, color=color, label=f'{run_label} Policy', s=50, zorder=5)
+                self.axes['loss'].scatter(policy_steps, policy_losses, color=color,
+                                        label=f'{run_label} Policy', s=80, zorder=5,
+                                        edgecolors='white', linewidths=1)
             else:
-                self.axes['loss'].plot(policy_steps, policy_losses, color=color, label=f'{run_label} Policy', linewidth=1.5, marker='o', markersize=3)
+                # Smooth noisy loss data
+                if len(policy_losses) > self.smoothing_window:
+                    self.axes['loss'].plot(policy_steps, policy_losses, color=color,
+                                         alpha=0.15, linewidth=0.5, zorder=1)
+                    smoothed = self._calculate_exponential_moving_average(policy_losses, self.smoothing_window)
+                    self.axes['loss'].plot(policy_steps, smoothed, color=color,
+                                         label=f'{run_label} Policy', linewidth=2, zorder=3)
+                else:
+                    marker = 'o' if show_markers else None
+                    self.axes['loss'].plot(policy_steps, policy_losses, color=color,
+                                         label=f'{run_label} Policy', linewidth=1.8,
+                                         marker=marker, markersize=2,
+                                         markevery=max(1, len(policy_losses)//20))
 
         if value_losses:
             value_steps = [m.timestep for m in metrics if m.value_loss is not None]
+            show_markers = len(value_losses) < self.marker_threshold
+
             if len(value_losses) == 1:
-                self.axes['loss'].scatter(value_steps, value_losses, color=color, alpha=0.7, label=f'{run_label} Value', s=50, marker='s', zorder=5)
+                self.axes['loss'].scatter(value_steps, value_losses, color=color, alpha=0.8,
+                                        label=f'{run_label} Value', s=80, marker='s', zorder=5,
+                                        edgecolors='white', linewidths=1)
             else:
-                self.axes['loss'].plot(value_steps, value_losses, color=color, alpha=0.7, linestyle=':',
-                                     label=f'{run_label} Value', linewidth=1.5, marker='s', markersize=3)
+                # Smooth noisy loss data
+                if len(value_losses) > self.smoothing_window:
+                    self.axes['loss'].plot(value_steps, value_losses, color=color,
+                                         alpha=0.15, linewidth=0.5, linestyle=':', zorder=1)
+                    smoothed = self._calculate_exponential_moving_average(value_losses, self.smoothing_window)
+                    self.axes['loss'].plot(value_steps, smoothed, color=color, alpha=0.8,
+                                         linestyle='--', label=f'{run_label} Value',
+                                         linewidth=2, zorder=3)
+                else:
+                    marker = 's' if show_markers else None
+                    self.axes['loss'].plot(value_steps, value_losses, color=color, alpha=0.8,
+                                         linestyle='--', label=f'{run_label} Value',
+                                         linewidth=1.8, marker=marker, markersize=2,
+                                         markevery=max(1, len(value_losses)//20))
         
         # Plot learning dynamics
         learning_rates = [m.learning_rate for m in metrics if m.learning_rate is not None]
@@ -400,54 +479,120 @@ class MLPlotter:
 
         if learning_rates:
             lr_steps = [m.timestep for m in metrics if m.learning_rate is not None]
+            show_markers = len(learning_rates) < self.marker_threshold
+
             if len(learning_rates) == 1:
-                self.axes['learning'].scatter(lr_steps, learning_rates, color=color, label=f'{run_label} LR', s=50, zorder=5)
+                self.axes['learning'].scatter(lr_steps, learning_rates, color=color,
+                                             label=f'{run_label} LR', s=80, zorder=5,
+                                             edgecolors='white', linewidths=1)
             else:
+                marker = 'o' if show_markers else None
                 self.axes['learning'].plot(lr_steps, learning_rates, color=color,
-                                         label=f'{run_label} LR', linewidth=1.5, marker='o', markersize=3)
+                                         label=f'{run_label} LR', linewidth=2,
+                                         marker=marker, markersize=2,
+                                         markevery=max(1, len(learning_rates)//20))
 
         if kl_divergences:
             kl_steps = [m.timestep for m in metrics if m.kl_divergence is not None]
+            show_markers = len(kl_divergences) < self.marker_threshold
+
             # Scale KL divergence for better visualization
             scaled_kl = [kl * 1000 for kl in kl_divergences]  # Scale by 1000
             if len(kl_divergences) == 1:
-                self.axes['learning'].scatter(kl_steps, scaled_kl, color=color, alpha=0.7, label=f'{run_label} KL×1000', s=50, marker='s', zorder=5)
+                self.axes['learning'].scatter(kl_steps, scaled_kl, color=color, alpha=0.8,
+                                             label=f'{run_label} KL×1000', s=80, marker='s',
+                                             zorder=5, edgecolors='white', linewidths=1)
             else:
-                self.axes['learning'].plot(kl_steps, scaled_kl, color=color, alpha=0.7,
-                                         linestyle='--', label=f'{run_label} KL×1000', linewidth=1.5, marker='s', markersize=3)
-        
+                marker = 's' if show_markers else None
+                self.axes['learning'].plot(kl_steps, scaled_kl, color=color, alpha=0.8,
+                                         linestyle='--', label=f'{run_label} KL×1000',
+                                         linewidth=2, marker=marker, markersize=2,
+                                         markevery=max(1, len(kl_divergences)//20))
+
         # Plot system performance
         fps_data = [m.fps for m in metrics if m.fps is not None]
         cpu_data = [m.cpu_percent for m in metrics if m.cpu_percent is not None]
 
         if fps_data:
             fps_steps = [m.timestep for m in metrics if m.fps is not None]
+            show_markers = len(fps_data) < self.marker_threshold
+
             if len(fps_data) == 1:
-                self.axes['system'].scatter(fps_steps, fps_data, color=color, label=f'{run_label} FPS', s=50, zorder=5)
+                self.axes['system'].scatter(fps_steps, fps_data, color=color,
+                                          label=f'{run_label} FPS', s=80, zorder=5,
+                                          edgecolors='white', linewidths=1)
             else:
-                self.axes['system'].plot(fps_steps, fps_data, color=color,
-                                       label=f'{run_label} FPS', linewidth=1.5, marker='o', markersize=3)
+                # Smooth FPS data if noisy
+                if len(fps_data) > self.smoothing_window:
+                    smoothed = self._calculate_exponential_moving_average(fps_data, self.smoothing_window // 2)
+                    self.axes['system'].plot(fps_steps, smoothed, color=color,
+                                           label=f'{run_label} FPS', linewidth=2, zorder=3)
+                else:
+                    marker = 'o' if show_markers else None
+                    self.axes['system'].plot(fps_steps, fps_data, color=color,
+                                           label=f'{run_label} FPS', linewidth=2,
+                                           marker=marker, markersize=2,
+                                           markevery=max(1, len(fps_data)//20))
 
         if cpu_data:
             cpu_steps = [m.timestep for m in metrics if m.cpu_percent is not None]
+            show_markers = len(cpu_data) < self.marker_threshold
+
             if len(cpu_data) == 1:
-                self.axes['system'].scatter(cpu_steps, cpu_data, color=color, alpha=0.7, label=f'{run_label} CPU%', s=50, marker='s', zorder=5)
+                self.axes['system'].scatter(cpu_steps, cpu_data, color=color, alpha=0.8,
+                                          label=f'{run_label} CPU%', s=80, marker='s',
+                                          zorder=5, edgecolors='white', linewidths=1)
             else:
-                self.axes['system'].plot(cpu_steps, cpu_data, color=color, alpha=0.7,
-                                       linestyle=':', label=f'{run_label} CPU%', linewidth=1.5, marker='s', markersize=3)
+                # Smooth CPU data if noisy
+                if len(cpu_data) > self.smoothing_window:
+                    smoothed = self._calculate_exponential_moving_average(cpu_data, self.smoothing_window // 2)
+                    self.axes['system'].plot(cpu_steps, smoothed, color=color, alpha=0.8,
+                                           linestyle='--', label=f'{run_label} CPU%',
+                                           linewidth=2, zorder=3)
+                else:
+                    marker = 's' if show_markers else None
+                    self.axes['system'].plot(cpu_steps, cpu_data, color=color, alpha=0.8,
+                                           linestyle='--', label=f'{run_label} CPU%',
+                                           linewidth=2, marker=marker, markersize=2,
+                                           markevery=max(1, len(cpu_data)//20))
     
     def _calculate_moving_average(self, data: List[float], window: int) -> List[float]:
         """Calculate moving average with specified window size."""
         if len(data) < window:
             return data
-        
+
         result = []
         for i in range(len(data)):
             start_idx = max(0, i - window + 1)
             window_data = data[start_idx:i + 1]
             result.append(np.mean(window_data))
-        
+
         return result
+
+    def _calculate_exponential_moving_average(self, data: List[float], span: int) -> List[float]:
+        """
+        Calculate exponential moving average (EMA) for smoother curves.
+
+        EMA gives more weight to recent values, making it more responsive
+        than simple moving average while still smoothing noise.
+
+        Args:
+            data: List of values to smooth
+            span: Span for EMA calculation (similar to window size)
+
+        Returns:
+            Smoothed data using EMA
+        """
+        if len(data) < 2:
+            return data
+
+        alpha = 2.0 / (span + 1)
+        ema = [data[0]]  # Start with first value
+
+        for value in data[1:]:
+            ema.append(alpha * value + (1 - alpha) * ema[-1])
+
+        return ema
     
     def export_plot(self, filename: str, dpi: int = 300, format: str = None):
         """
