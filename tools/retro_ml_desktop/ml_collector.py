@@ -412,11 +412,11 @@ class MetricsCollector:
         
         self.logger.info(f"Stopped metrics collection for run {run_id}")
     
-    def _collection_loop(self, run_id: str, log_source: Callable[[], str], 
+    def _collection_loop(self, run_id: str, log_source: Callable[[], str],
                         pid: Optional[int], interval: float, stop_event: threading.Event):
         """
         Main collection loop for a training run.
-        
+
         Args:
             run_id: Run identifier
             log_source: Function to get log content
@@ -424,30 +424,32 @@ class MetricsCollector:
             interval: Collection interval
             stop_event: Event to signal stop
         """
-        last_log_position = 0
-        
+        last_log_hash = None
+
         while not stop_event.wait(interval):
             try:
-                # Get new log content
+                # Get recent log content (log_source returns last 2000 chars)
                 current_logs = log_source()
                 print(f"[MetricsCollector] Collection loop for {run_id}: got {len(current_logs)} chars from log_source")
                 self.logger.info(f"Collection loop for {run_id}: got {len(current_logs)} chars from log_source")
 
-                # Only process new log content
-                if len(current_logs) > last_log_position:
-                    new_logs = current_logs[last_log_position:]
-                    last_log_position = len(current_logs)
+                # Check if logs have changed by comparing hash
+                import hashlib
+                current_hash = hashlib.md5(current_logs.encode()).hexdigest() if current_logs else None
 
-                    print(f"[MetricsCollector] Processing {len(new_logs)} new log chars for {run_id}")
-                    self.logger.info(f"Processing {len(new_logs)} new log chars for {run_id}")
-                    if new_logs:
-                        # Show preview of new logs
-                        preview = new_logs[:200].replace('\n', '\\n')
-                        print(f"[MetricsCollector] New logs preview: {preview}...")
-                        self.logger.info(f"New logs preview: {preview}...")
+                if current_hash != last_log_hash and current_logs:
+                    last_log_hash = current_hash
 
-                    # Parse metrics from new logs
-                    metrics_list = self.log_parser.parse_log_chunk(new_logs, run_id)
+                    print(f"[MetricsCollector] New log content detected for {run_id}, processing {len(current_logs)} chars")
+                    self.logger.info(f"New log content detected for {run_id}, processing {len(current_logs)} chars")
+
+                    # Show preview of logs
+                    preview = current_logs[:200].replace('\n', '\\n')
+                    print(f"[MetricsCollector] Log preview: {preview}...")
+                    self.logger.info(f"Log preview: {preview}...")
+
+                    # Parse metrics from logs
+                    metrics_list = self.log_parser.parse_log_chunk(current_logs, run_id)
                     print(f"[MetricsCollector] Parsed {len(metrics_list)} metrics from logs for {run_id}")
                     self.logger.info(f"Parsed {len(metrics_list)} metrics from logs for {run_id}")
                     
