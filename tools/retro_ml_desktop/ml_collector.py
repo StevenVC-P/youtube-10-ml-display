@@ -430,6 +430,7 @@ class MetricsCollector:
             try:
                 # Get new log content
                 current_logs = log_source()
+                print(f"[MetricsCollector] Collection loop for {run_id}: got {len(current_logs)} chars from log_source")
                 self.logger.info(f"Collection loop for {run_id}: got {len(current_logs)} chars from log_source")
 
                 # Only process new log content
@@ -437,28 +438,33 @@ class MetricsCollector:
                     new_logs = current_logs[last_log_position:]
                     last_log_position = len(current_logs)
 
+                    print(f"[MetricsCollector] Processing {len(new_logs)} new log chars for {run_id}")
                     self.logger.info(f"Processing {len(new_logs)} new log chars for {run_id}")
                     if new_logs:
                         # Show preview of new logs
                         preview = new_logs[:200].replace('\n', '\\n')
+                        print(f"[MetricsCollector] New logs preview: {preview}...")
                         self.logger.info(f"New logs preview: {preview}...")
 
                     # Parse metrics from new logs
                     metrics_list = self.log_parser.parse_log_chunk(new_logs, run_id)
+                    print(f"[MetricsCollector] Parsed {len(metrics_list)} metrics from logs for {run_id}")
                     self.logger.info(f"Parsed {len(metrics_list)} metrics from logs for {run_id}")
                     
                     # Add system metrics to latest metric
                     if metrics_list:
                         system_metrics = self.system_monitor.get_system_metrics(pid)
                         latest_metric = metrics_list[-1]
-                        
+
                         # Update with system metrics
                         for key, value in system_metrics.items():
                             setattr(latest_metric, key, value)
-                        
+
                         # Store metrics in database
+                        print(f"[MetricsCollector] Storing {len(metrics_list)} metrics in database for {run_id}")
                         for metric in metrics_list:
                             self.database.add_training_metrics(metric)
+                            print(f"[MetricsCollector] Saved metric: timestep={metric.timestep}, reward={metric.episode_reward_mean}, fps={metric.fps}")
 
                         # Update experiment run with latest progress and best reward
                         if metrics_list:
