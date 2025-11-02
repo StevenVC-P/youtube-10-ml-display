@@ -227,13 +227,11 @@ class RetroMLSimple:
         self.processes_tab = self.tabview.add("Training Processes")
         self.ml_dashboard_tab = self.tabview.add("🧪 ML Dashboard")
         self.videos_tab = self.tabview.add("Video Gallery")
-        self.logs_tab = self.tabview.add("Logs")
 
         # Setup each tab
         self._setup_processes_tab()
         self._setup_ml_dashboard_tab()
         self._setup_videos_tab()
-        self._setup_logs_tab()
     
     def _setup_processes_tab(self):
         """Setup the processes tab with process list."""
@@ -298,7 +296,8 @@ class RetroMLSimple:
         self.ml_dashboard = MLDashboard(
             parent_frame=self.ml_dashboard_tab,
             database=self.ml_database,
-            collector=self.ml_collector
+            collector=self.ml_collector,
+            process_manager=self.process_manager
         )
 
     def _setup_videos_tab(self):
@@ -391,8 +390,6 @@ class RetroMLSimple:
 
         # Auto-refresh videos when tab is opened
         self._refresh_videos()
-
-    def _setup_logs_tab(self):
         """Setup the logs tab with log viewer."""
         # Log text area
         self.log_text = ctk.CTkTextbox(self.logs_tab, wrap="word")

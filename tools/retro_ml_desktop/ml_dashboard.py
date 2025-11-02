@@ -36,18 +36,20 @@ class MLDashboard:
     - Export and reporting capabilities
     """
     
-    def __init__(self, parent_frame, database: MetricsDatabase, collector: MetricsCollector):
+    def __init__(self, parent_frame, database: MetricsDatabase, collector: MetricsCollector, process_manager=None):
         """
         Initialize ML dashboard.
-        
+
         Args:
             parent_frame: Parent CTk frame
             database: MetricsDatabase instance
             collector: MetricsCollector instance
+            process_manager: ProcessManager instance for log access
         """
         self.parent = parent_frame
         self.database = database
         self.collector = collector
+        self.process_manager = process_manager
         
         # UI components
         self.main_frame = None
@@ -187,12 +189,14 @@ class MLDashboard:
         self.metrics_tabview.add("📊 Training Curves")
         self.metrics_tabview.add("📈 Performance")
         self.metrics_tabview.add("🔍 Analysis")
+        self.metrics_tabview.add("📝 Logs")
         self.metrics_tabview.add("⚙️ Details")
-        
+
         # Setup each tab
         self._setup_training_curves_tab()
         self._setup_performance_tab()
         self._setup_analysis_tab()
+        self._setup_logs_tab()
         self._setup_details_tab()
     
     def _setup_training_curves_tab(self):
@@ -266,7 +270,63 @@ class MLDashboard:
         # Analysis results
         self.analysis_text = ctk.CTkTextbox(comparison_frame, height=300)
         self.analysis_text.pack(fill="both", expand=True, padx=10, pady=5)
-    
+
+    def _setup_logs_tab(self):
+        """Setup logs display tab."""
+        tab = self.metrics_tabview.tab("📝 Logs")
+
+        # Header frame
+        header_frame = ctk.CTkFrame(tab)
+        header_frame.pack(fill="x", padx=10, pady=5)
+
+        ctk.CTkLabel(header_frame, text="📝 Training Logs",
+                    font=ctk.CTkFont(size=14, weight="bold")).pack(side="left", pady=5)
+
+        # Controls
+        controls_frame = ctk.CTkFrame(header_frame)
+        controls_frame.pack(side="right", padx=5)
+
+        ctk.CTkButton(controls_frame, text="🔄 Refresh", width=80,
+                     command=self._refresh_logs).pack(side="left", padx=2)
+
+        ctk.CTkButton(controls_frame, text="📋 Copy", width=80,
+                     command=self._copy_logs).pack(side="left", padx=2)
+
+        ctk.CTkButton(controls_frame, text="💾 Save", width=80,
+                     command=self._save_logs).pack(side="left", padx=2)
+
+        # Run selector frame (shows which run's logs are displayed)
+        selector_frame = ctk.CTkFrame(tab)
+        selector_frame.pack(fill="x", padx=10, pady=2)
+
+        ctk.CTkLabel(selector_frame, text="Showing logs for:").pack(side="left", padx=5)
+        self.current_log_run_label = ctk.CTkLabel(selector_frame, text="No run selected",
+                                                 font=ctk.CTkFont(weight="bold"))
+        self.current_log_run_label.pack(side="left", padx=5)
+
+        # Auto-refresh toggle
+        self.auto_refresh_logs = ctk.CTkCheckBox(selector_frame, text="Auto-refresh")
+        self.auto_refresh_logs.pack(side="right", padx=5)
+        self.auto_refresh_logs.select()  # Enable by default
+
+        # Logs display frame
+        logs_frame = ctk.CTkFrame(tab)
+        logs_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # Logs text widget with scrollbar
+        self.logs_text = ctk.CTkTextbox(logs_frame, height=400, font=ctk.CTkFont(family="Consolas", size=10))
+        self.logs_text.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Status frame
+        status_frame = ctk.CTkFrame(tab)
+        status_frame.pack(fill="x", padx=10, pady=2)
+
+        self.logs_status_label = ctk.CTkLabel(status_frame, text="📊 Ready to display logs")
+        self.logs_status_label.pack(side="left", padx=5, pady=2)
+
+        # Initialize
+        self.current_log_run_id = None
+
     def _setup_details_tab(self):
         """Setup experiment details tab."""
         tab = self.metrics_tabview.tab("⚙️ Details")
@@ -401,6 +461,7 @@ class MLDashboard:
         if self.selected_runs:
             first_run_id = next(iter(self.selected_runs))
             self._update_run_details(first_run_id)
+            self._update_logs_display(first_run_id)
 
             # Update plotter with selected runs
             if self.plotter:
@@ -563,8 +624,101 @@ class MLDashboard:
         """Copy run configuration to clipboard."""
         # TODO: Implement config copying
         messagebox.showinfo("Coming Soon", "Configuration copying will be implemented.")
-    
+
+    def _update_logs_display(self, run_id: str):
+        """Update the logs display for the selected run."""
+        try:
+            self.current_log_run_id = run_id
+            self.current_log_run_label.configure(text=f"run-{run_id[-8:]}")  # Show last 8 chars
+
+            # Get logs from process manager if available
+            if self.process_manager:
+                logs = self.process_manager.get_recent_logs(run_id)
+                if logs:
+                    # Clear and update logs display
+                    self.logs_text.delete("1.0", "end")
+                    self.logs_text.insert("1.0", logs)
+
+                    # Auto-scroll to bottom
+                    self.logs_text.see("end")
+
+                    # Update status
+                    lines_count = len(logs.split('\n'))
+                    chars_count = len(logs)
+                    self.logs_status_label.configure(
+                        text=f"📊 Showing {lines_count} lines ({chars_count} chars) for {run_id[-8:]}"
+                    )
+                else:
+                    self.logs_text.delete("1.0", "end")
+                    self.logs_text.insert("1.0", f"No logs available for run {run_id}\n\nThis could mean:\n- The training process hasn't started yet\n- The process has finished\n- Logs are not being captured")
+                    self.logs_status_label.configure(text="📊 No logs available")
+            else:
+                self.logs_text.delete("1.0", "end")
+                self.logs_text.insert("1.0", "Process manager not available - cannot display logs")
+                self.logs_status_label.configure(text="❌ Process manager unavailable")
+
+        except Exception as e:
+            self.logger.error(f"Failed to update logs display: {e}")
+            self.logs_text.delete("1.0", "end")
+            self.logs_text.insert("1.0", f"Error loading logs: {e}")
+            self.logs_status_label.configure(text="❌ Error loading logs")
+
+    def _refresh_logs(self):
+        """Manually refresh the logs display."""
+        if self.current_log_run_id:
+            self._update_logs_display(self.current_log_run_id)
+        else:
+            messagebox.showinfo("No Run Selected", "Please select a run first to view its logs.")
+
+    def _copy_logs(self):
+        """Copy current logs to clipboard."""
+        try:
+            logs_content = self.logs_text.get("1.0", "end-1c")
+            if logs_content.strip():
+                self.parent.clipboard_clear()
+                self.parent.clipboard_append(logs_content)
+                messagebox.showinfo("Copied", "Logs copied to clipboard!")
+            else:
+                messagebox.showwarning("No Logs", "No logs to copy.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to copy logs: {e}")
+
+    def _save_logs(self):
+        """Save current logs to file."""
+        try:
+            if not self.current_log_run_id:
+                messagebox.showwarning("No Run Selected", "Please select a run first.")
+                return
+
+            logs_content = self.logs_text.get("1.0", "end-1c")
+            if not logs_content.strip():
+                messagebox.showwarning("No Logs", "No logs to save.")
+                return
+
+            # Ask user for save location
+            filename = filedialog.asksaveasfilename(
+                title="Save Logs",
+                defaultextension=".log",
+                filetypes=[("Log files", "*.log"), ("Text files", "*.txt"), ("All files", "*.*")],
+                initialvalue=f"logs_{self.current_log_run_id}.log"
+            )
+
+            if filename:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(logs_content)
+                messagebox.showinfo("Saved", f"Logs saved to {filename}")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save logs: {e}")
+
     def _schedule_refresh(self):
         """Schedule automatic refresh."""
         self._refresh_runs()
+
+        # Auto-refresh logs if enabled and a run is selected
+        if (hasattr(self, 'auto_refresh_logs') and
+            self.auto_refresh_logs.get() and
+            self.current_log_run_id):
+            self._refresh_logs()
+
         self.parent.after(self.refresh_interval, self._schedule_refresh)
