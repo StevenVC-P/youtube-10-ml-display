@@ -277,10 +277,8 @@ class MLPlotter:
             # Set fixed axis limits that start from (0,0) and only expand
             self._set_fixed_axis_limits()
 
-            # Add legends
-            for ax in self.axes.values():
-                if ax.get_lines():
-                    ax.legend(loc='upper left', fontsize=8)
+            # Add improved legends
+            self._add_legends()
 
             # Display annotations for selected runs (Sprint 1 feature)
             if self.annotation_manager:
@@ -292,6 +290,62 @@ class MLPlotter:
 
         except Exception as e:
             self.logger.error(f"Failed to update plots: {e}")
+
+    def _add_legends(self):
+        """Add improved legends to all subplots with data."""
+        legend_config = {
+            'loc': 'best',  # Automatically find best position
+            'fontsize': 9,
+            'frameon': True,
+            'fancybox': True,
+            'shadow': True,
+            'framealpha': 0.9,
+            'facecolor': '#2a2a2a',
+            'edgecolor': '#505050',
+            'labelcolor': '#e0e0e0',
+            'ncol': 1,  # Single column by default
+            'borderpad': 0.8,
+            'labelspacing': 0.6,
+            'handlelength': 2.5,
+            'handleheight': 1.2,
+            'handletextpad': 0.8,
+            'columnspacing': 1.5,
+        }
+
+        for ax_name, ax in self.axes.items():
+            lines = ax.get_lines()
+            if not lines:
+                continue
+
+            # Get labels and handles
+            handles, labels = ax.get_legend_handles_labels()
+
+            if not handles:
+                continue
+
+            # Determine number of columns based on number of entries
+            num_entries = len(handles)
+            if num_entries > 6:
+                legend_config['ncol'] = 2  # Two columns for many entries
+            elif num_entries > 10:
+                legend_config['ncol'] = 3  # Three columns for very many entries
+            else:
+                legend_config['ncol'] = 1  # Single column for few entries
+
+            # Special handling for loss plot (often has many series)
+            if ax_name == 'loss' and num_entries > 4:
+                legend_config['fontsize'] = 8
+                legend_config['ncol'] = 2
+
+            # Add legend
+            legend = ax.legend(**legend_config)
+
+            # Style the legend
+            if legend:
+                legend.get_frame().set_linewidth(0.5)
+
+                # Make legend draggable for user customization
+                legend.set_draggable(True)
 
     def _set_fixed_axis_limits(self):
         """Set fixed axis limits that start from (0,0) and only expand as needed."""
@@ -388,16 +442,26 @@ class MLPlotter:
         
         # Extract data
         timesteps = [m.timestep for m in metrics]
-        run_label = f"{run.config.algorithm}-{run.config.env_id.split('/')[-1]}" if run.config else run_id[:8]
+
+        # Create informative run label
+        base_label = f"{run.config.algorithm}-{run.config.env_id.split('/')[-1]}" if run.config else run_id[:8]
+
+        # Get latest metrics for additional info
+        latest_metric = metrics[-1] if metrics else None
         
         # Plot reward data
         rewards = [m.episode_reward_mean for m in metrics if m.episode_reward_mean is not None]
         reward_steps = [m.timestep for m in metrics if m.episode_reward_mean is not None]
 
         if rewards:
+            # Create enhanced label with current value
+            latest_reward = rewards[-1]
+            best_reward = max(rewards)
+            reward_label = f"{base_label} (curr: {latest_reward:.1f}, best: {best_reward:.1f})"
+
             # Use scatter for single points, line for multiple points
             if len(rewards) == 1:
-                self.axes['reward'].scatter(reward_steps, rewards, color=color, label=run_label,
+                self.axes['reward'].scatter(reward_steps, rewards, color=color, label=reward_label,
                                           s=80, zorder=5, edgecolors='white', linewidths=1)
             else:
                 # Determine if we should show markers based on data density
@@ -413,12 +477,12 @@ class MLPlotter:
 
                     # Calculate and plot smoothed data
                     smoothed = self._calculate_exponential_moving_average(rewards, self.smoothing_window)
-                    self.axes['reward'].plot(reward_steps, smoothed, color=color, label=run_label,
+                    self.axes['reward'].plot(reward_steps, smoothed, color=color, label=reward_label,
                                            linewidth=2.5, marker=marker, markersize=markersize,
                                            zorder=3, markevery=max(1, len(rewards)//20))
                 else:
                     # Just plot the data
-                    self.axes['reward'].plot(reward_steps, rewards, color=color, label=run_label,
+                    self.axes['reward'].plot(reward_steps, rewards, color=color, label=reward_label,
                                            linewidth=2, marker=marker, markersize=markersize,
                                            markevery=max(1, len(rewards)//20))
         
@@ -430,9 +494,13 @@ class MLPlotter:
             policy_steps = [m.timestep for m in metrics if m.policy_loss is not None]
             show_markers = len(policy_losses) < self.marker_threshold
 
+            # Enhanced label with current value
+            latest_policy_loss = policy_losses[-1]
+            policy_label = f'{base_label} Policy ({latest_policy_loss:.4f})'
+
             if len(policy_losses) == 1:
                 self.axes['loss'].scatter(policy_steps, policy_losses, color=color,
-                                        label=f'{run_label} Policy', s=80, zorder=5,
+                                        label=policy_label, s=80, zorder=5,
                                         edgecolors='white', linewidths=1)
             else:
                 # Smooth noisy loss data
@@ -441,11 +509,11 @@ class MLPlotter:
                                          alpha=0.15, linewidth=0.5, zorder=1)
                     smoothed = self._calculate_exponential_moving_average(policy_losses, self.smoothing_window)
                     self.axes['loss'].plot(policy_steps, smoothed, color=color,
-                                         label=f'{run_label} Policy', linewidth=2, zorder=3)
+                                         label=policy_label, linewidth=2, zorder=3)
                 else:
                     marker = 'o' if show_markers else None
                     self.axes['loss'].plot(policy_steps, policy_losses, color=color,
-                                         label=f'{run_label} Policy', linewidth=1.8,
+                                         label=policy_label, linewidth=1.8,
                                          marker=marker, markersize=2,
                                          markevery=max(1, len(policy_losses)//20))
 
@@ -453,9 +521,13 @@ class MLPlotter:
             value_steps = [m.timestep for m in metrics if m.value_loss is not None]
             show_markers = len(value_losses) < self.marker_threshold
 
+            # Enhanced label with current value
+            latest_value_loss = value_losses[-1]
+            value_label = f'{base_label} Value ({latest_value_loss:.4f})'
+
             if len(value_losses) == 1:
                 self.axes['loss'].scatter(value_steps, value_losses, color=color, alpha=0.8,
-                                        label=f'{run_label} Value', s=80, marker='s', zorder=5,
+                                        label=value_label, s=80, marker='s', zorder=5,
                                         edgecolors='white', linewidths=1)
             else:
                 # Smooth noisy loss data
@@ -464,12 +536,12 @@ class MLPlotter:
                                          alpha=0.15, linewidth=0.5, linestyle=':', zorder=1)
                     smoothed = self._calculate_exponential_moving_average(value_losses, self.smoothing_window)
                     self.axes['loss'].plot(value_steps, smoothed, color=color, alpha=0.8,
-                                         linestyle='--', label=f'{run_label} Value',
+                                         linestyle='--', label=value_label,
                                          linewidth=2, zorder=3)
                 else:
                     marker = 's' if show_markers else None
                     self.axes['loss'].plot(value_steps, value_losses, color=color, alpha=0.8,
-                                         linestyle='--', label=f'{run_label} Value',
+                                         linestyle='--', label=value_label,
                                          linewidth=1.8, marker=marker, markersize=2,
                                          markevery=max(1, len(value_losses)//20))
         
@@ -517,20 +589,25 @@ class MLPlotter:
             fps_steps = [m.timestep for m in metrics if m.fps is not None]
             show_markers = len(fps_data) < self.marker_threshold
 
+            # Enhanced label with current and average FPS
+            latest_fps = fps_data[-1]
+            avg_fps = sum(fps_data) / len(fps_data)
+            fps_label = f'{base_label} FPS ({latest_fps:.0f}, avg: {avg_fps:.0f})'
+
             if len(fps_data) == 1:
                 self.axes['system'].scatter(fps_steps, fps_data, color=color,
-                                          label=f'{run_label} FPS', s=80, zorder=5,
+                                          label=fps_label, s=80, zorder=5,
                                           edgecolors='white', linewidths=1)
             else:
                 # Smooth FPS data if noisy
                 if len(fps_data) > self.smoothing_window:
                     smoothed = self._calculate_exponential_moving_average(fps_data, self.smoothing_window // 2)
                     self.axes['system'].plot(fps_steps, smoothed, color=color,
-                                           label=f'{run_label} FPS', linewidth=2, zorder=3)
+                                           label=fps_label, linewidth=2, zorder=3)
                 else:
                     marker = 'o' if show_markers else None
                     self.axes['system'].plot(fps_steps, fps_data, color=color,
-                                           label=f'{run_label} FPS', linewidth=2,
+                                           label=fps_label, linewidth=2,
                                            marker=marker, markersize=2,
                                            markevery=max(1, len(fps_data)//20))
 
@@ -538,21 +615,26 @@ class MLPlotter:
             cpu_steps = [m.timestep for m in metrics if m.cpu_percent is not None]
             show_markers = len(cpu_data) < self.marker_threshold
 
+            # Enhanced label with current and average CPU
+            latest_cpu = cpu_data[-1]
+            avg_cpu = sum(cpu_data) / len(cpu_data)
+            cpu_label = f'{base_label} CPU% ({latest_cpu:.1f}%, avg: {avg_cpu:.1f}%)'
+
             if len(cpu_data) == 1:
                 self.axes['system'].scatter(cpu_steps, cpu_data, color=color, alpha=0.8,
-                                          label=f'{run_label} CPU%', s=80, marker='s',
+                                          label=cpu_label, s=80, marker='s',
                                           zorder=5, edgecolors='white', linewidths=1)
             else:
                 # Smooth CPU data if noisy
                 if len(cpu_data) > self.smoothing_window:
                     smoothed = self._calculate_exponential_moving_average(cpu_data, self.smoothing_window // 2)
                     self.axes['system'].plot(cpu_steps, smoothed, color=color, alpha=0.8,
-                                           linestyle='--', label=f'{run_label} CPU%',
+                                           linestyle='--', label=cpu_label,
                                            linewidth=2, zorder=3)
                 else:
                     marker = 's' if show_markers else None
                     self.axes['system'].plot(cpu_steps, cpu_data, color=color, alpha=0.8,
-                                           linestyle='--', label=f'{run_label} CPU%',
+                                           linestyle='--', label=cpu_label,
                                            linewidth=2, marker=marker, markersize=2,
                                            markevery=max(1, len(cpu_data)//20))
     
