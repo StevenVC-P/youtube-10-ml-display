@@ -293,25 +293,6 @@ class MLPlotter:
 
     def _add_legends(self):
         """Add improved legends to all subplots with data."""
-        legend_config = {
-            'loc': 'best',  # Automatically find best position
-            'fontsize': 9,
-            'frameon': True,
-            'fancybox': True,
-            'shadow': True,
-            'framealpha': 0.9,
-            'facecolor': '#2a2a2a',
-            'edgecolor': '#505050',
-            'labelcolor': '#e0e0e0',
-            'ncol': 1,  # Single column by default
-            'borderpad': 0.8,
-            'labelspacing': 0.6,
-            'handlelength': 2.5,
-            'handleheight': 1.2,
-            'handletextpad': 0.8,
-            'columnspacing': 1.5,
-        }
-
         for ax_name, ax in self.axes.items():
             lines = ax.get_lines()
             if not lines:
@@ -323,12 +304,32 @@ class MLPlotter:
             if not handles:
                 continue
 
+            # Create a fresh config for each axis (avoid mutation issues)
+            legend_config = {
+                'loc': 'best',  # Automatically find best position
+                'fontsize': 9,
+                'frameon': True,
+                'fancybox': True,
+                'shadow': True,
+                'framealpha': 0.9,
+                'facecolor': '#2a2a2a',
+                'edgecolor': '#505050',
+                'labelcolor': '#e0e0e0',
+                'ncol': 1,  # Single column by default
+                'borderpad': 0.8,
+                'labelspacing': 0.6,
+                'handlelength': 2.5,
+                'handleheight': 1.2,
+                'handletextpad': 0.8,
+                'columnspacing': 1.5,
+            }
+
             # Determine number of columns based on number of entries
             num_entries = len(handles)
-            if num_entries > 6:
-                legend_config['ncol'] = 2  # Two columns for many entries
-            elif num_entries > 10:
+            if num_entries > 10:
                 legend_config['ncol'] = 3  # Three columns for very many entries
+            elif num_entries > 6:
+                legend_config['ncol'] = 2  # Two columns for many entries
             else:
                 legend_config['ncol'] = 1  # Single column for few entries
 
@@ -338,14 +339,17 @@ class MLPlotter:
                 legend_config['ncol'] = 2
 
             # Add legend
-            legend = ax.legend(**legend_config)
+            try:
+                legend = ax.legend(**legend_config)
 
-            # Style the legend
-            if legend:
-                legend.get_frame().set_linewidth(0.5)
+                # Style the legend
+                if legend:
+                    legend.get_frame().set_linewidth(0.5)
 
-                # Make legend draggable for user customization
-                legend.set_draggable(True)
+                    # Make legend draggable for user customization
+                    legend.set_draggable(True)
+            except Exception as e:
+                self.logger.error(f"Failed to add legend to {ax_name}: {e}")
 
     def _set_fixed_axis_limits(self):
         """Set fixed axis limits that start from (0,0) and only expand as needed."""
