@@ -497,194 +497,198 @@ class MLPlotter:
         # Get latest metrics for additional info
         latest_metric = metrics[-1] if metrics else None
         
-        # Plot reward data
-        rewards = [m.episode_reward_mean for m in metrics if m.episode_reward_mean is not None]
-        reward_steps = [m.timestep for m in metrics if m.episode_reward_mean is not None]
+        # Plot reward data (only if reward axis exists)
+        if 'reward' in self.axes:
+            rewards = [m.episode_reward_mean for m in metrics if m.episode_reward_mean is not None]
+            reward_steps = [m.timestep for m in metrics if m.episode_reward_mean is not None]
 
-        if rewards:
-            # Create enhanced label with current value
-            latest_reward = rewards[-1]
-            best_reward = max(rewards)
-            reward_label = f"{base_label} (curr: {latest_reward:.1f}, best: {best_reward:.1f})"
+            if rewards:
+                # Create enhanced label with current value
+                latest_reward = rewards[-1]
+                best_reward = max(rewards)
+                reward_label = f"{base_label} (curr: {latest_reward:.1f}, best: {best_reward:.1f})"
 
-            # Use scatter for single points, line for multiple points
-            if len(rewards) == 1:
-                self.axes['reward'].scatter(reward_steps, rewards, color=color, label=reward_label,
-                                          s=80, zorder=5, edgecolors='white', linewidths=1)
-            else:
-                # Determine if we should show markers based on data density
-                show_markers = len(rewards) < self.marker_threshold
-                marker = 'o' if show_markers else None
-                markersize = 3 if show_markers else 0
-
-                # Plot raw data with transparency if we have smoothing
-                if len(rewards) > self.smoothing_window and not self.show_raw_data:
-                    # Show faint raw data
-                    self.axes['reward'].plot(reward_steps, rewards, color=color, alpha=0.2,
-                                           linewidth=0.8, zorder=1)
-
-                    # Calculate and plot smoothed data
-                    smoothed = self._calculate_exponential_moving_average(rewards, self.smoothing_window)
-                    self.axes['reward'].plot(reward_steps, smoothed, color=color, label=reward_label,
-                                           linewidth=2.5, marker=marker, markersize=markersize,
-                                           zorder=3, markevery=max(1, len(rewards)//20))
+                # Use scatter for single points, line for multiple points
+                if len(rewards) == 1:
+                    self.axes['reward'].scatter(reward_steps, rewards, color=color, label=reward_label,
+                                              s=80, zorder=5, edgecolors='white', linewidths=1)
                 else:
-                    # Just plot the data
-                    self.axes['reward'].plot(reward_steps, rewards, color=color, label=reward_label,
-                                           linewidth=2, marker=marker, markersize=markersize,
-                                           markevery=max(1, len(rewards)//20))
+                    # Determine if we should show markers based on data density
+                    show_markers = len(rewards) < self.marker_threshold
+                    marker = 'o' if show_markers else None
+                    markersize = 3 if show_markers else 0
+
+                    # Plot raw data with transparency if we have smoothing
+                    if len(rewards) > self.smoothing_window and not self.show_raw_data:
+                        # Show faint raw data
+                        self.axes['reward'].plot(reward_steps, rewards, color=color, alpha=0.2,
+                                               linewidth=0.8, zorder=1)
+
+                        # Calculate and plot smoothed data
+                        smoothed = self._calculate_exponential_moving_average(rewards, self.smoothing_window)
+                        self.axes['reward'].plot(reward_steps, smoothed, color=color, label=reward_label,
+                                               linewidth=2.5, marker=marker, markersize=markersize,
+                                               zorder=3, markevery=max(1, len(rewards)//20))
+                    else:
+                        # Just plot the data
+                        self.axes['reward'].plot(reward_steps, rewards, color=color, label=reward_label,
+                                               linewidth=2, marker=marker, markersize=markersize,
+                                               markevery=max(1, len(rewards)//20))
         
-        # Plot loss data
-        policy_losses = [m.policy_loss for m in metrics if m.policy_loss is not None]
-        value_losses = [m.value_loss for m in metrics if m.value_loss is not None]
+        # Plot loss data (only if loss axis exists)
+        if 'loss' in self.axes:
+            policy_losses = [m.policy_loss for m in metrics if m.policy_loss is not None]
+            value_losses = [m.value_loss for m in metrics if m.value_loss is not None]
 
-        if policy_losses:
-            policy_steps = [m.timestep for m in metrics if m.policy_loss is not None]
-            show_markers = len(policy_losses) < self.marker_threshold
+            if policy_losses:
+                policy_steps = [m.timestep for m in metrics if m.policy_loss is not None]
+                show_markers = len(policy_losses) < self.marker_threshold
 
-            # Enhanced label with current value
-            latest_policy_loss = policy_losses[-1]
-            policy_label = f'{base_label} Policy ({latest_policy_loss:.4f})'
+                # Enhanced label with current value
+                latest_policy_loss = policy_losses[-1]
+                policy_label = f'{base_label} Policy ({latest_policy_loss:.4f})'
 
-            if len(policy_losses) == 1:
-                self.axes['loss'].scatter(policy_steps, policy_losses, color=color,
-                                        label=policy_label, s=80, zorder=5,
-                                        edgecolors='white', linewidths=1)
-            else:
-                # Smooth noisy loss data
-                if len(policy_losses) > self.smoothing_window:
-                    self.axes['loss'].plot(policy_steps, policy_losses, color=color,
-                                         alpha=0.15, linewidth=0.5, zorder=1)
-                    smoothed = self._calculate_exponential_moving_average(policy_losses, self.smoothing_window)
-                    self.axes['loss'].plot(policy_steps, smoothed, color=color,
-                                         label=policy_label, linewidth=2, zorder=3)
+                if len(policy_losses) == 1:
+                    self.axes['loss'].scatter(policy_steps, policy_losses, color=color,
+                                            label=policy_label, s=80, zorder=5,
+                                            edgecolors='white', linewidths=1)
+                else:
+                    # Smooth noisy loss data
+                    if len(policy_losses) > self.smoothing_window:
+                        self.axes['loss'].plot(policy_steps, policy_losses, color=color,
+                                             alpha=0.15, linewidth=0.5, zorder=1)
+                        smoothed = self._calculate_exponential_moving_average(policy_losses, self.smoothing_window)
+                        self.axes['loss'].plot(policy_steps, smoothed, color=color,
+                                             label=policy_label, linewidth=2, zorder=3)
+                    else:
+                        marker = 'o' if show_markers else None
+                        self.axes['loss'].plot(policy_steps, policy_losses, color=color,
+                                             label=policy_label, linewidth=1.8,
+                                             marker=marker, markersize=2,
+                                             markevery=max(1, len(policy_losses)//20))
+
+            if value_losses:
+                value_steps = [m.timestep for m in metrics if m.value_loss is not None]
+                show_markers = len(value_losses) < self.marker_threshold
+
+                # Enhanced label with current value
+                latest_value_loss = value_losses[-1]
+                value_label = f'{base_label} Value ({latest_value_loss:.4f})'
+
+                if len(value_losses) == 1:
+                    self.axes['loss'].scatter(value_steps, value_losses, color=color, alpha=0.8,
+                                            label=value_label, s=80, marker='s', zorder=5,
+                                            edgecolors='white', linewidths=1)
+                else:
+                    # Smooth noisy loss data
+                    if len(value_losses) > self.smoothing_window:
+                        self.axes['loss'].plot(value_steps, value_losses, color=color,
+                                             alpha=0.15, linewidth=0.5, linestyle=':', zorder=1)
+                        smoothed = self._calculate_exponential_moving_average(value_losses, self.smoothing_window)
+                        self.axes['loss'].plot(value_steps, smoothed, color=color, alpha=0.8,
+                                             linestyle='--', label=value_label,
+                                             linewidth=2, zorder=3)
+                    else:
+                        marker = 's' if show_markers else None
+                        self.axes['loss'].plot(value_steps, value_losses, color=color, alpha=0.8,
+                                             linestyle='--', label=value_label,
+                                             linewidth=1.8, marker=marker, markersize=2,
+                                             markevery=max(1, len(value_losses)//20))
+        
+        # Plot learning dynamics (only if learning axis exists)
+        if 'learning' in self.axes:
+            learning_rates = [m.learning_rate for m in metrics if m.learning_rate is not None]
+            kl_divergences = [m.kl_divergence for m in metrics if m.kl_divergence is not None]
+
+            if learning_rates:
+                lr_steps = [m.timestep for m in metrics if m.learning_rate is not None]
+                show_markers = len(learning_rates) < self.marker_threshold
+
+                if len(learning_rates) == 1:
+                    self.axes['learning'].scatter(lr_steps, learning_rates, color=color,
+                                                 label=f'{base_label} LR', s=80, zorder=5,
+                                                 edgecolors='white', linewidths=1)
                 else:
                     marker = 'o' if show_markers else None
-                    self.axes['loss'].plot(policy_steps, policy_losses, color=color,
-                                         label=policy_label, linewidth=1.8,
-                                         marker=marker, markersize=2,
-                                         markevery=max(1, len(policy_losses)//20))
+                    self.axes['learning'].plot(lr_steps, learning_rates, color=color,
+                                             label=f'{base_label} LR', linewidth=2,
+                                             marker=marker, markersize=2,
+                                             markevery=max(1, len(learning_rates)//20))
 
-        if value_losses:
-            value_steps = [m.timestep for m in metrics if m.value_loss is not None]
-            show_markers = len(value_losses) < self.marker_threshold
+            if kl_divergences:
+                kl_steps = [m.timestep for m in metrics if m.kl_divergence is not None]
+                show_markers = len(kl_divergences) < self.marker_threshold
 
-            # Enhanced label with current value
-            latest_value_loss = value_losses[-1]
-            value_label = f'{base_label} Value ({latest_value_loss:.4f})'
-
-            if len(value_losses) == 1:
-                self.axes['loss'].scatter(value_steps, value_losses, color=color, alpha=0.8,
-                                        label=value_label, s=80, marker='s', zorder=5,
-                                        edgecolors='white', linewidths=1)
-            else:
-                # Smooth noisy loss data
-                if len(value_losses) > self.smoothing_window:
-                    self.axes['loss'].plot(value_steps, value_losses, color=color,
-                                         alpha=0.15, linewidth=0.5, linestyle=':', zorder=1)
-                    smoothed = self._calculate_exponential_moving_average(value_losses, self.smoothing_window)
-                    self.axes['loss'].plot(value_steps, smoothed, color=color, alpha=0.8,
-                                         linestyle='--', label=value_label,
-                                         linewidth=2, zorder=3)
+                # Scale KL divergence for better visualization
+                scaled_kl = [kl * 1000 for kl in kl_divergences]  # Scale by 1000
+                if len(kl_divergences) == 1:
+                    self.axes['learning'].scatter(kl_steps, scaled_kl, color=color, alpha=0.8,
+                                                 label=f'{base_label} KL×1000', s=80, marker='s',
+                                                 zorder=5, edgecolors='white', linewidths=1)
                 else:
                     marker = 's' if show_markers else None
-                    self.axes['loss'].plot(value_steps, value_losses, color=color, alpha=0.8,
-                                         linestyle='--', label=value_label,
-                                         linewidth=1.8, marker=marker, markersize=2,
-                                         markevery=max(1, len(value_losses)//20))
-        
-        # Plot learning dynamics
-        learning_rates = [m.learning_rate for m in metrics if m.learning_rate is not None]
-        kl_divergences = [m.kl_divergence for m in metrics if m.kl_divergence is not None]
+                    self.axes['learning'].plot(kl_steps, scaled_kl, color=color, alpha=0.8,
+                                             linestyle='--', label=f'{base_label} KL×1000',
+                                             linewidth=2, marker=marker, markersize=2,
+                                             markevery=max(1, len(kl_divergences)//20))
 
-        if learning_rates:
-            lr_steps = [m.timestep for m in metrics if m.learning_rate is not None]
-            show_markers = len(learning_rates) < self.marker_threshold
+        # Plot system performance (only if system axis exists)
+        if 'system' in self.axes:
+            fps_data = [m.fps for m in metrics if m.fps is not None]
+            cpu_data = [m.cpu_percent for m in metrics if m.cpu_percent is not None]
 
-            if len(learning_rates) == 1:
-                self.axes['learning'].scatter(lr_steps, learning_rates, color=color,
-                                             label=f'{run_label} LR', s=80, zorder=5,
-                                             edgecolors='white', linewidths=1)
-            else:
-                marker = 'o' if show_markers else None
-                self.axes['learning'].plot(lr_steps, learning_rates, color=color,
-                                         label=f'{run_label} LR', linewidth=2,
-                                         marker=marker, markersize=2,
-                                         markevery=max(1, len(learning_rates)//20))
+            if fps_data:
+                fps_steps = [m.timestep for m in metrics if m.fps is not None]
+                show_markers = len(fps_data) < self.marker_threshold
 
-        if kl_divergences:
-            kl_steps = [m.timestep for m in metrics if m.kl_divergence is not None]
-            show_markers = len(kl_divergences) < self.marker_threshold
+                # Enhanced label with current and average FPS
+                latest_fps = fps_data[-1]
+                avg_fps = sum(fps_data) / len(fps_data)
+                fps_label = f'{base_label} FPS ({latest_fps:.0f}, avg: {avg_fps:.0f})'
 
-            # Scale KL divergence for better visualization
-            scaled_kl = [kl * 1000 for kl in kl_divergences]  # Scale by 1000
-            if len(kl_divergences) == 1:
-                self.axes['learning'].scatter(kl_steps, scaled_kl, color=color, alpha=0.8,
-                                             label=f'{run_label} KL×1000', s=80, marker='s',
-                                             zorder=5, edgecolors='white', linewidths=1)
-            else:
-                marker = 's' if show_markers else None
-                self.axes['learning'].plot(kl_steps, scaled_kl, color=color, alpha=0.8,
-                                         linestyle='--', label=f'{run_label} KL×1000',
-                                         linewidth=2, marker=marker, markersize=2,
-                                         markevery=max(1, len(kl_divergences)//20))
-
-        # Plot system performance
-        fps_data = [m.fps for m in metrics if m.fps is not None]
-        cpu_data = [m.cpu_percent for m in metrics if m.cpu_percent is not None]
-
-        if fps_data:
-            fps_steps = [m.timestep for m in metrics if m.fps is not None]
-            show_markers = len(fps_data) < self.marker_threshold
-
-            # Enhanced label with current and average FPS
-            latest_fps = fps_data[-1]
-            avg_fps = sum(fps_data) / len(fps_data)
-            fps_label = f'{base_label} FPS ({latest_fps:.0f}, avg: {avg_fps:.0f})'
-
-            if len(fps_data) == 1:
-                self.axes['system'].scatter(fps_steps, fps_data, color=color,
-                                          label=fps_label, s=80, zorder=5,
-                                          edgecolors='white', linewidths=1)
-            else:
-                # Smooth FPS data if noisy
-                if len(fps_data) > self.smoothing_window:
-                    smoothed = self._calculate_exponential_moving_average(fps_data, self.smoothing_window // 2)
-                    self.axes['system'].plot(fps_steps, smoothed, color=color,
-                                           label=fps_label, linewidth=2, zorder=3)
+                if len(fps_data) == 1:
+                    self.axes['system'].scatter(fps_steps, fps_data, color=color,
+                                              label=fps_label, s=80, zorder=5,
+                                              edgecolors='white', linewidths=1)
                 else:
-                    marker = 'o' if show_markers else None
-                    self.axes['system'].plot(fps_steps, fps_data, color=color,
-                                           label=fps_label, linewidth=2,
-                                           marker=marker, markersize=2,
-                                           markevery=max(1, len(fps_data)//20))
+                    # Smooth FPS data if noisy
+                    if len(fps_data) > self.smoothing_window:
+                        smoothed = self._calculate_exponential_moving_average(fps_data, self.smoothing_window // 2)
+                        self.axes['system'].plot(fps_steps, smoothed, color=color,
+                                               label=fps_label, linewidth=2, zorder=3)
+                    else:
+                        marker = 'o' if show_markers else None
+                        self.axes['system'].plot(fps_steps, fps_data, color=color,
+                                               label=fps_label, linewidth=2,
+                                               marker=marker, markersize=2,
+                                               markevery=max(1, len(fps_data)//20))
 
-        if cpu_data:
-            cpu_steps = [m.timestep for m in metrics if m.cpu_percent is not None]
-            show_markers = len(cpu_data) < self.marker_threshold
+            if cpu_data:
+                cpu_steps = [m.timestep for m in metrics if m.cpu_percent is not None]
+                show_markers = len(cpu_data) < self.marker_threshold
 
-            # Enhanced label with current and average CPU
-            latest_cpu = cpu_data[-1]
-            avg_cpu = sum(cpu_data) / len(cpu_data)
-            cpu_label = f'{base_label} CPU% ({latest_cpu:.1f}%, avg: {avg_cpu:.1f}%)'
+                # Enhanced label with current and average CPU
+                latest_cpu = cpu_data[-1]
+                avg_cpu = sum(cpu_data) / len(cpu_data)
+                cpu_label = f'{base_label} CPU% ({latest_cpu:.1f}%, avg: {avg_cpu:.1f}%)'
 
-            if len(cpu_data) == 1:
-                self.axes['system'].scatter(cpu_steps, cpu_data, color=color, alpha=0.8,
-                                          label=cpu_label, s=80, marker='s',
-                                          zorder=5, edgecolors='white', linewidths=1)
-            else:
-                # Smooth CPU data if noisy
-                if len(cpu_data) > self.smoothing_window:
-                    smoothed = self._calculate_exponential_moving_average(cpu_data, self.smoothing_window // 2)
-                    self.axes['system'].plot(cpu_steps, smoothed, color=color, alpha=0.8,
-                                           linestyle='--', label=cpu_label,
-                                           linewidth=2, zorder=3)
+                if len(cpu_data) == 1:
+                    self.axes['system'].scatter(cpu_steps, cpu_data, color=color, alpha=0.8,
+                                              label=cpu_label, s=80, marker='s',
+                                              zorder=5, edgecolors='white', linewidths=1)
                 else:
-                    marker = 's' if show_markers else None
-                    self.axes['system'].plot(cpu_steps, cpu_data, color=color, alpha=0.8,
-                                           linestyle='--', label=cpu_label,
-                                           linewidth=2, marker=marker, markersize=2,
-                                           markevery=max(1, len(cpu_data)//20))
+                    # Smooth CPU data if noisy
+                    if len(cpu_data) > self.smoothing_window:
+                        smoothed = self._calculate_exponential_moving_average(cpu_data, self.smoothing_window // 2)
+                        self.axes['system'].plot(cpu_steps, smoothed, color=color, alpha=0.8,
+                                               linestyle='--', label=cpu_label,
+                                               linewidth=2, zorder=3)
+                    else:
+                        marker = 's' if show_markers else None
+                        self.axes['system'].plot(cpu_steps, cpu_data, color=color, alpha=0.8,
+                                               linestyle='--', label=cpu_label,
+                                               linewidth=2, marker=marker, markersize=2,
+                                               markevery=max(1, len(cpu_data)//20))
     
     def _calculate_moving_average(self, data: List[float], window: int) -> List[float]:
         """Calculate moving average with specified window size."""
