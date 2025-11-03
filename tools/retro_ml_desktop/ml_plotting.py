@@ -76,6 +76,15 @@ class MLPlotter:
         self.toolbar = None
         self.axes = {}
 
+        # Metric-to-chart mapping for smart filtering
+        self.metric_chart_mapping = {
+            'episode_reward_mean': ['reward', 'learning', 'system'],  # Reward-focused view
+            'policy_loss': ['loss', 'learning', 'reward'],  # Loss-focused view
+            'value_loss': ['loss', 'learning', 'reward'],  # Loss-focused view
+            'learning_rate': ['learning', 'loss', 'reward'],  # Learning-focused view
+            'fps': ['system', 'reward', 'learning'],  # Performance-focused view
+        }
+
         # Setup logging
         self.logger = logging.getLogger(__name__)
 
@@ -138,16 +147,52 @@ class MLPlotter:
             self.logger.error(f"Failed to initialize Sprint 1 features: {e}")
     
     def _create_subplots(self):
-        """Create subplot layout for different metrics."""
+        """Create subplot layout for different metrics based on selected primary metric."""
         self.figure.clear()
-        
-        # Create 2x2 subplot grid
-        self.axes = {
-            'reward': self.figure.add_subplot(2, 2, 1),
-            'loss': self.figure.add_subplot(2, 2, 2),
-            'learning': self.figure.add_subplot(2, 2, 3),
-            'system': self.figure.add_subplot(2, 2, 4)
-        }
+
+        # Get relevant charts for current metric
+        relevant_charts = self.metric_chart_mapping.get(self.current_metric,
+                                                        ['reward', 'loss', 'learning', 'system'])
+
+        # Determine layout based on number of charts
+        num_charts = len(relevant_charts)
+
+        if num_charts == 1:
+            # Single large chart
+            layout = (1, 1)
+        elif num_charts == 2:
+            # Two charts side by side
+            layout = (1, 2)
+        elif num_charts == 3:
+            # Three charts: 2 on top, 1 on bottom (larger)
+            layout = (2, 2)
+        else:
+            # Four charts: 2x2 grid
+            layout = (2, 2)
+
+        # Create axes dictionary with only relevant charts
+        self.axes = {}
+
+        # Chart position mapping for different layouts
+        if num_charts == 1:
+            positions = [1]
+        elif num_charts == 2:
+            positions = [1, 2]
+        elif num_charts == 3:
+            # Top row: 2 charts, bottom row: 1 chart spanning both columns
+            positions = [1, 2, (2, 1, 1, 2)]  # Last one spans columns 1-2 of row 2
+        else:
+            positions = [1, 2, 3, 4]
+
+        # Create subplots
+        for i, chart_name in enumerate(relevant_charts):
+            if i < len(positions):
+                pos = positions[i]
+                if isinstance(pos, tuple):
+                    # Subplot spanning multiple columns
+                    self.axes[chart_name] = self.figure.add_subplot(pos[0], pos[1], (pos[2], pos[3]))
+                else:
+                    self.axes[chart_name] = self.figure.add_subplot(layout[0], layout[1], pos)
         
         # Configure axes
         self._configure_axes()
@@ -241,12 +286,18 @@ class MLPlotter:
     
     def set_metric(self, metric: str):
         """
-        Set the primary metric to display.
-        
+        Set the primary metric to display and reorganize charts accordingly.
+
         Args:
             metric: Metric name to display
         """
+        self.logger.info(f"Changing primary metric from '{self.current_metric}' to '{metric}'")
         self.current_metric = metric
+
+        # Recreate subplots with new layout
+        self._create_subplots()
+
+        # Update plots with new layout
         self._update_plots()
     
     def _update_plots(self):
