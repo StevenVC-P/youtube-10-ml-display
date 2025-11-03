@@ -204,7 +204,7 @@ class MLPlotter:
         self._plot_empty_state()
     
     def _configure_axes(self):
-        """Configure axes properties and styling."""
+        """Configure axes properties and styling for all existing axes."""
         from matplotlib.ticker import FuncFormatter
 
         # Custom formatter for readable numbers (e.g., 1M instead of 1e6)
@@ -218,41 +218,46 @@ class MLPlotter:
 
         formatter = FuncFormatter(format_thousands)
 
+        # Configure each axis only if it exists
         # Reward plot
-        self.axes['reward'].set_title('Episode Reward', fontsize=14, fontweight='bold',
-                                     color='#e0e0e0', pad=10)
-        self.axes['reward'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
-        self.axes['reward'].set_ylabel('Reward', color='#b0b0b0', fontsize=11)
-        self.axes['reward'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
-        self.axes['reward'].xaxis.set_major_formatter(formatter)
-        self.axes['reward'].set_facecolor('#252525')
+        if 'reward' in self.axes:
+            self.axes['reward'].set_title('Episode Reward', fontsize=14, fontweight='bold',
+                                         color='#e0e0e0', pad=10)
+            self.axes['reward'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
+            self.axes['reward'].set_ylabel('Reward', color='#b0b0b0', fontsize=11)
+            self.axes['reward'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
+            self.axes['reward'].xaxis.set_major_formatter(formatter)
+            self.axes['reward'].set_facecolor('#252525')
 
         # Loss plot
-        self.axes['loss'].set_title('Training Losses', fontsize=14, fontweight='bold',
-                                   color='#e0e0e0', pad=10)
-        self.axes['loss'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
-        self.axes['loss'].set_ylabel('Loss', color='#b0b0b0', fontsize=11)
-        self.axes['loss'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
-        self.axes['loss'].xaxis.set_major_formatter(formatter)
-        self.axes['loss'].set_facecolor('#252525')
+        if 'loss' in self.axes:
+            self.axes['loss'].set_title('Training Losses', fontsize=14, fontweight='bold',
+                                       color='#e0e0e0', pad=10)
+            self.axes['loss'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
+            self.axes['loss'].set_ylabel('Loss', color='#b0b0b0', fontsize=11)
+            self.axes['loss'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
+            self.axes['loss'].xaxis.set_major_formatter(formatter)
+            self.axes['loss'].set_facecolor('#252525')
 
         # Learning dynamics plot
-        self.axes['learning'].set_title('Learning Dynamics', fontsize=14, fontweight='bold',
-                                       color='#e0e0e0', pad=10)
-        self.axes['learning'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
-        self.axes['learning'].set_ylabel('Value', color='#b0b0b0', fontsize=11)
-        self.axes['learning'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
-        self.axes['learning'].xaxis.set_major_formatter(formatter)
-        self.axes['learning'].set_facecolor('#252525')
+        if 'learning' in self.axes:
+            self.axes['learning'].set_title('Learning Dynamics', fontsize=14, fontweight='bold',
+                                           color='#e0e0e0', pad=10)
+            self.axes['learning'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
+            self.axes['learning'].set_ylabel('Value', color='#b0b0b0', fontsize=11)
+            self.axes['learning'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
+            self.axes['learning'].xaxis.set_major_formatter(formatter)
+            self.axes['learning'].set_facecolor('#252525')
 
         # System performance plot
-        self.axes['system'].set_title('System Performance', fontsize=14, fontweight='bold',
-                                     color='#e0e0e0', pad=10)
-        self.axes['system'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
-        self.axes['system'].set_ylabel('FPS / Utilization %', color='#b0b0b0', fontsize=11)
-        self.axes['system'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
-        self.axes['system'].xaxis.set_major_formatter(formatter)
-        self.axes['system'].set_facecolor('#252525')
+        if 'system' in self.axes:
+            self.axes['system'].set_title('System Performance', fontsize=14, fontweight='bold',
+                                         color='#e0e0e0', pad=10)
+            self.axes['system'].set_xlabel('Timesteps', color='#b0b0b0', fontsize=11)
+            self.axes['system'].set_ylabel('FPS / Utilization %', color='#b0b0b0', fontsize=11)
+            self.axes['system'].grid(True, alpha=0.15, linestyle='--', linewidth=0.5)
+            self.axes['system'].xaxis.set_major_formatter(formatter)
+            self.axes['system'].set_facecolor('#252525')
 
         # Style all axes with better colors
         for ax in self.axes.values():
