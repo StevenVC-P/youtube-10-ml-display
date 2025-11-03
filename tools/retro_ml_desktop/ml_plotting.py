@@ -157,42 +157,30 @@ class MLPlotter:
         # Determine layout based on number of charts
         num_charts = len(relevant_charts)
 
-        if num_charts == 1:
-            # Single large chart
-            layout = (1, 1)
-        elif num_charts == 2:
-            # Two charts side by side
-            layout = (1, 2)
-        elif num_charts == 3:
-            # Three charts: 2 on top, 1 on bottom (larger)
-            layout = (2, 2)
-        else:
-            # Four charts: 2x2 grid
-            layout = (2, 2)
-
         # Create axes dictionary with only relevant charts
         self.axes = {}
 
-        # Chart position mapping for different layouts
         if num_charts == 1:
-            positions = [1]
-        elif num_charts == 2:
-            positions = [1, 2]
-        elif num_charts == 3:
-            # Top row: 2 charts, bottom row: 1 chart spanning both columns
-            positions = [1, 2, (2, 1, 1, 2)]  # Last one spans columns 1-2 of row 2
-        else:
-            positions = [1, 2, 3, 4]
+            # Single large chart
+            self.axes[relevant_charts[0]] = self.figure.add_subplot(1, 1, 1)
 
-        # Create subplots
-        for i, chart_name in enumerate(relevant_charts):
-            if i < len(positions):
-                pos = positions[i]
-                if isinstance(pos, tuple):
-                    # Subplot spanning multiple columns
-                    self.axes[chart_name] = self.figure.add_subplot(pos[0], pos[1], (pos[2], pos[3]))
-                else:
-                    self.axes[chart_name] = self.figure.add_subplot(layout[0], layout[1], pos)
+        elif num_charts == 2:
+            # Two charts stacked vertically (easier to read than side-by-side)
+            self.axes[relevant_charts[0]] = self.figure.add_subplot(2, 1, 1)
+            self.axes[relevant_charts[1]] = self.figure.add_subplot(2, 1, 2)
+
+        elif num_charts == 3:
+            # First chart on top (full width), two charts on bottom
+            self.axes[relevant_charts[0]] = self.figure.add_subplot(2, 2, (1, 2))  # Spans columns 1-2
+            self.axes[relevant_charts[1]] = self.figure.add_subplot(2, 2, 3)
+            self.axes[relevant_charts[2]] = self.figure.add_subplot(2, 2, 4)
+
+        else:
+            # Four charts: 2x2 grid
+            self.axes[relevant_charts[0]] = self.figure.add_subplot(2, 2, 1)
+            self.axes[relevant_charts[1]] = self.figure.add_subplot(2, 2, 2)
+            self.axes[relevant_charts[2]] = self.figure.add_subplot(2, 2, 3)
+            self.axes[relevant_charts[3]] = self.figure.add_subplot(2, 2, 4)
         
         # Configure axes
         self._configure_axes()
