@@ -217,23 +217,23 @@ class MLAnalyticsVideoCallback(BaseCallback):
             actual_seconds = frames_recorded / self.fps
             
             if self.verbose >= 1:
-                print(f"✅ SUCCESS: Enhanced milestone {milestone_pct}% video saved!")
-                print(f"📁 LOCATION: {video_path.absolute()}")
-                print(f"📊 DETAILS:")
+                print(f"[OK] SUCCESS: Enhanced milestone {milestone_pct}% video saved!")
+                print(f"[FILE] LOCATION: {video_path.absolute()}")
+                print(f"[STATS] DETAILS:")
                 print(f"   - Duration: {actual_seconds:.1f}s ({frames_recorded} frames)")
                 print(f"   - Episodes: {episodes_completed}")
                 print(f"   - Recording time: {duration:.1f}s")
-                print(f"🎬 TO VIEW: Open the file above or use:")
+                print(f"[VIDEO] TO VIEW: Open the file above or use:")
                 print(f"   file:///{str(video_path.absolute()).replace(chr(92), '/')}")
                 print("=" * 60)
                 
         except Exception as e:
             ffmpeg_process.terminate()
             if self.verbose >= 1:
-                print(f"❌ ERROR: Failed to record enhanced video: {e}")
-                print(f"📍 Error details: {type(e).__name__}: {str(e)}")
+                print(f"[ERROR] ERROR: Failed to record enhanced video: {e}")
+                print(f"[INFO] Error details: {type(e).__name__}: {str(e)}")
                 import traceback
-                print(f"🔍 Full traceback:")
+                print(f"[DEBUG] Full traceback:")
                 traceback.print_exc()
 
     def _extract_ml_analytics(self, model, obs, action, episode_reward: float, step: int) -> Dict[str, Any]:
@@ -301,8 +301,8 @@ class MLAnalyticsVideoCallback(BaseCallback):
                             
         except Exception as e:
             if self.verbose >= 1:
-                print(f"⚠️ Warning: Could not extract full ML analytics: {e}")
-                print(f"📍 Analytics extraction error: {type(e).__name__}: {str(e)}")
+                print(f"[WARNING] Warning: Could not extract full ML analytics: {e}")
+                print(f"[INFO] Analytics extraction error: {type(e).__name__}: {str(e)}")
                 import traceback
                 traceback.print_exc()
 
@@ -343,7 +343,7 @@ class MLAnalyticsVideoCallback(BaseCallback):
         line_height = 20
 
         # Title
-        cv2.putText(panel, "🧠 ML ANALYTICS", (10, y_pos), font, 0.7, white, 2)
+        cv2.putText(panel, "[ML] ML ANALYTICS", (10, y_pos), font, 0.7, white, 2)
         y_pos += line_height * 2
 
         # Use monospaced font for better alignment

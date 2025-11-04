@@ -85,19 +85,24 @@ class MilestoneCheckpointCallback(BaseCallback):
             self.model.save(str(checkpoint_path))
             
             if self.verbose >= 2:
-                print(f"[Checkpoint] ✅ Checkpoint saved: {checkpoint_path}")
+                print(f"[Checkpoint] [OK] Checkpoint saved: {checkpoint_path}")
                 
         except Exception as e:
-            print(f"[Checkpoint] ❌ Error saving checkpoint: {e}")
+            print(f"[Checkpoint] [ERROR] Error saving checkpoint: {e}")
 
     def _on_training_end(self) -> None:
         """Save final model when training completes."""
         try:
-            final_model_path = self.save_path / "final_model.zip"
-            self.model.save(str(final_model_path))
-            
-            if self.verbose >= 1:
-                print(f"[Checkpoint] ✅ Final model saved: {final_model_path}")
-                
+            # Only save final model if training completed successfully
+            # (not if it was stopped/paused early)
+            if self.model is not None:
+                final_model_path = self.save_path / "final_model.zip"
+                self.model.save(str(final_model_path))
+
+                if self.verbose >= 1:
+                    print(f"[Checkpoint] [OK] Final model saved: {final_model_path}")
+
         except Exception as e:
-            print(f"[Checkpoint] ❌ Error saving final model: {e}")
+            # Don't fail if we can't save final model (e.g., if training was interrupted)
+            if self.verbose >= 1:
+                print(f"[Checkpoint] [WARNING] Could not save final model: {e}")

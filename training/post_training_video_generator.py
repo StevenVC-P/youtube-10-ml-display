@@ -151,12 +151,12 @@ class PostTrainingVideoGenerator:
                 if video_path:
                     generated_videos.append(video_path)
                     if self.verbose >= 1:
-                        print(f"[PostVideo] ✅ Generated video for {milestone_pct}%: {video_path.name}")
+                        print(f"[PostVideo] [OK] Generated video for {milestone_pct}%: {video_path.name}")
                 else:
-                    print(f"[PostVideo] ❌ Failed to generate video for {milestone_pct}%")
+                    print(f"[PostVideo] [ERROR] Failed to generate video for {milestone_pct}%")
                     
             except Exception as e:
-                print(f"[PostVideo] ❌ Error generating video for {milestone_pct}%: {e}")
+                print(f"[PostVideo] [ERROR] Error generating video for {milestone_pct}%: {e}")
         
         print(f"[PostVideo] Video generation complete! Generated {len(generated_videos)} videos.")
         return generated_videos
@@ -308,11 +308,11 @@ def main():
     # Generate videos
     generated_videos = generator.generate_all_videos()
     
-    print(f"\n🎬 Video generation complete!")
+    print(f"\n[VIDEO] Video generation complete!")
     print(f"Generated {len(generated_videos)} videos in {args.output_dir}")
     
     for video_path in generated_videos:
-        print(f"  📹 {video_path.name}")
+        print(f"  [VIDEO] {video_path.name}")
 
 
 if __name__ == "__main__":

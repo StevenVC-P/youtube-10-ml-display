@@ -91,11 +91,15 @@ class HourVideoCallback(BaseCallback):
 
     def _on_training_end(self) -> None:
         """Called when training ends."""
-        if self.current_video_writer is not None:
-            self._finish_current_hour()
-        
-        if self.verbose >= 1:
-            print(f"[HourVideo] Training ended. Recorded {self.current_hour - 1} hour(s) of video.")
+        try:
+            if self.current_video_writer is not None:
+                self._finish_current_hour()
+
+            if self.verbose >= 1:
+                print(f"[HourVideo] Training ended. Recorded {self.current_hour - 1} hour(s) of video.")
+        except Exception as e:
+            if self.verbose >= 1:
+                print(f"[HourVideo] [WARNING] Error during training end cleanup: {e}")
 
     def _start_new_hour_video(self) -> None:
         """Start recording a new hour-long video."""
@@ -187,12 +191,12 @@ class HourVideoCallback(BaseCallback):
             duration = time.time() - self.hour_start_time if self.hour_start_time else 0
             
             if self.verbose >= 1:
-                print(f"✅ Hour {self.current_hour} video completed!")
-                print(f"📁 LOCATION: {self.current_video_path.absolute()}")
-                print(f"📊 DETAILS:")
+                print(f"[OK] Hour {self.current_hour} video completed!")
+                print(f"[FILE] LOCATION: {self.current_video_path.absolute()}")
+                print(f"[STATS] DETAILS:")
                 print(f"   - Duration: {self.hour_frame_count / self.fps:.1f}s ({self.hour_frame_count:,} frames)")
                 print(f"   - Recording time: {duration:.1f}s")
-                print(f"🎬 TO VIEW: {self.current_video_path.absolute()}")
+                print(f"[VIDEO] TO VIEW: {self.current_video_path.absolute()}")
                 print("=" * 60)
             
             self.current_hour += 1

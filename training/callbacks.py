@@ -280,12 +280,36 @@ class MilestoneVideoCallback(BaseCallback):
     
     def _on_training_end(self) -> None:
         """Ensure background jobs finish before training fully exits."""
-        self.pending_jobs.join()
-        self.stop_event.set()
-        if self.worker_thread.is_alive():
-            self.worker_thread.join(timeout=30)
-        if self.verbose >= 2:
-            print("[Video] Milestone recorder thread stopped")
+        try:
+            # Signal worker thread to stop
+            self.stop_event.set()
+
+            # Wait for pending jobs with timeout to prevent hanging
+            if self.verbose >= 2:
+                print("[Video] Waiting for pending video jobs to complete...")
+
+            # Give pending jobs a chance to finish, but don't wait forever
+            import time
+            timeout = 10  # seconds
+            start_time = time.time()
+
+            while not self.pending_jobs.empty() and (time.time() - start_time) < timeout:
+                time.sleep(0.5)
+
+            # Wait for worker thread to finish
+            if self.worker_thread.is_alive():
+                self.worker_thread.join(timeout=5)
+
+            if self.verbose >= 2:
+                if self.pending_jobs.empty():
+                    print("[Video] [OK] All video jobs completed")
+                else:
+                    print(f"[Video] [WARNING] {self.pending_jobs.qsize()} video jobs still pending (timeout reached)")
+                print("[Video] Milestone recorder thread stopped")
+
+        except Exception as e:
+            if self.verbose >= 1:
+                print(f"[Video] [WARNING] Error during training end cleanup: {e}")
 
 
 class TrainingProgressCallback(BaseCallback):
