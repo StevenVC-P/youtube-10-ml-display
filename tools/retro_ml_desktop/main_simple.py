@@ -1376,9 +1376,9 @@ class RetroMLSimple:
     
     def _show_start_training_dialog(self):
         """Show the start training dialog."""
-        dialog = StartTrainingDialog(self.root, self.presets, self.games, self.algorithms)
+        dialog = StartTrainingDialog(self.root, self.presets, self.games, self.algorithms, app=self)
         result = dialog.show()
-        
+
         if result:
             self._start_training_process(result)
     
@@ -1868,9 +1868,10 @@ class CUDADiagnosticsDialog:
 
 class StartTrainingDialog:
     """Simplified dialog for configuring training."""
-    
-    def __init__(self, parent, presets: Dict, games: List[str], algorithms: List[str]):
+
+    def __init__(self, parent, presets: Dict, games: List[str], algorithms: List[str], app=None):
         self.parent = parent
+        self.app = app  # Store reference to the main app for accessing process_manager
         self.presets = presets
         self.games = games
         self.algorithms = algorithms
@@ -2169,9 +2170,9 @@ class StartTrainingDialog:
                 self.previous_runs_combo.configure(values=["No game selected"])
                 return
 
-            # Get ML database from parent
-            if hasattr(self.parent, 'process_manager') and hasattr(self.parent.process_manager, 'ml_database'):
-                ml_db = self.parent.process_manager.ml_database
+            # Get ML database from app
+            if self.app and hasattr(self.app, 'process_manager') and hasattr(self.app.process_manager, 'ml_database'):
+                ml_db = self.app.process_manager.ml_database
 
                 # Get previous runs for this game, excluding active ones
                 previous_runs = ml_db.get_runs_by_game(game_env_id, exclude_active=True)
