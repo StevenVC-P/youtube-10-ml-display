@@ -235,10 +235,10 @@ class MetricsDatabase:
                 values.append(run_id)
                 
                 query = f"UPDATE experiment_runs SET {', '.join(set_clauses)} WHERE run_id = ?"
-                conn.execute(query, values)
+                cursor = conn.execute(query, values)
                 conn.commit()
-                
-                return conn.rowcount > 0
+
+                return cursor.rowcount > 0
                 
         except Exception as e:
             self.logger.error(f"Failed to update experiment run {run_id}: {e}")
@@ -267,6 +267,113 @@ class MetricsDatabase:
         except Exception as e:
             self.logger.error(f"Failed to get field {field_name} for run {run_id}: {e}")
             return None
+
+    def get_runs_by_game(self, env_id: str, exclude_active: bool = False) -> List[ExperimentRun]:
+        """
+        Get all experiment runs for a specific game/environment.
+
+        Args:
+            env_id: Environment ID to filter by
+            exclude_active: If True, exclude runs with status 'running'
+
+        Returns:
+            List of ExperimentRun objects for the specified game
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+
+                query = "SELECT * FROM experiment_runs WHERE config_json LIKE ?"
+                params = [f'%"env_id": "{env_id}"%']
+
+                if exclude_active:
+                    query += " AND status != 'running'"
+
+                query += " ORDER BY start_time DESC"
+
+                cursor = conn.execute(query, params)
+                rows = cursor.fetchall()
+
+                runs = []
+                for row in rows:
+                    # Deserialize complex fields
+                    config = None
+                    if row['config_json']:
+                        config_data = json.loads(row['config_json'])
+                        config = ExperimentConfig.from_dict(config_data)
+
+                    dependencies = json.loads(row['dependencies_json']) if row['dependencies_json'] else None
+                    tags = json.loads(row['tags_json']) if row['tags_json'] else None
+
+                    run = ExperimentRun(
+                        run_id=row['run_id'],
+                        experiment_name=row['experiment_name'],
+                        start_time=datetime.fromisoformat(row['start_time']),
+                        end_time=datetime.fromisoformat(row['end_time']) if row['end_time'] else None,
+                        status=row['status'],
+                        current_timestep=row['current_timestep'],
+                        config=config,
+                        best_reward=row['best_reward'],
+                        final_reward=row['final_reward'],
+                        convergence_timestep=row['convergence_timestep'],
+                        model_path=row['model_path'],
+                        log_path=row['log_path'],
+                        video_path=row['video_path'],
+                        tensorboard_path=row['tensorboard_path'],
+                        git_commit=row['git_commit'],
+                        python_version=row['python_version'],
+                        dependencies=dependencies,
+                        description=row['description'],
+                        tags=tags
+                    )
+                    runs.append(run)
+
+                return runs
+
+        except Exception as e:
+            self.logger.error(f"Failed to get runs for game {env_id}: {e}")
+            return []
+
+    def is_run_active(self, run_id: str) -> bool:
+        """
+        Check if a run is currently active (status = 'running').
+
+        Args:
+            run_id: Run ID to check
+
+        Returns:
+            True if the run is active, False otherwise
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+
+                cursor.execute("SELECT status FROM experiment_runs WHERE run_id = ?", (run_id,))
+                result = cursor.fetchone()
+
+                return result and result[0] == 'running'
+
+        except Exception as e:
+            self.logger.error(f"Failed to check if run {run_id} is active: {e}")
+            return False
+
+    def mark_run_inactive(self, run_id: str, final_status: str = 'completed') -> bool:
+        """
+        Mark a run as inactive (not running).
+
+        Args:
+            run_id: Run ID to update
+            final_status: Final status to set (completed, failed, stopped, etc.)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.update_experiment_run(
+            run_id,
+            status=final_status,
+            end_time=datetime.now()
+        )
     
     def add_training_metrics(self, metrics: TrainingMetrics) -> bool:
         """

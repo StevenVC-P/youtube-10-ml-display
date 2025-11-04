@@ -182,34 +182,36 @@ def setup_tensorboard_logging(config: Dict[str, Any]) -> str:
 def train_agent(
     config: Dict[str, Any],
     dryrun_seconds: Optional[int] = None,
-    verbose: int = 1
+    verbose: int = 1,
+    resume_from_checkpoint: Optional[str] = None
 ) -> str:
     """
     Train the RL agent with the given configuration.
-    
+
     Args:
         config: Configuration dictionary
         dryrun_seconds: If set, stop training after this many seconds
         verbose: Verbosity level
-        
+        resume_from_checkpoint: Path to checkpoint to resume training from
+
     Returns:
         Path to the saved checkpoint
     """
     # Print system information
     if verbose > 0:
         print_system_info()
-    
+
     # Setup paths
     models_path = Path(config['paths']['models'])
     models_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Setup TensorBoard logging
     tb_log_path = setup_tensorboard_logging(config)
-    
+
     # Create vectorized environment
     train_config = config['train']
     n_envs = train_config.get('vec_envs', 8)
-    
+
     if verbose > 0:
         print(f">> Creating {n_envs} vectorized environments...")
 
@@ -227,13 +229,33 @@ def train_agent(
         print(f"  - Observation shape: {env_info['observation_shape']}")
         print(f"  - Action space: {env_info['action_space']}")
         print(f"  - Number of actions: {env_info['n_actions']}")
-    
-    # Create algorithm
-    if verbose > 0:
-        print(f"[Agent] Creating {train_config['algo'].upper()} algorithm...")
-    
-    algo = create_algo(config, vec_env, tensorboard_log=tb_log_path)
-    
+
+    # Create or load algorithm
+    if resume_from_checkpoint and Path(resume_from_checkpoint).exists():
+        # Resume from checkpoint
+        if verbose > 0:
+            print(f"[Agent] Loading checkpoint from {resume_from_checkpoint}...")
+
+        # Import the appropriate algorithm class
+        algo_name = train_config['algo'].upper()
+        if algo_name == 'PPO':
+            from stable_baselines3 import PPO
+            algo = PPO.load(resume_from_checkpoint, env=vec_env, tensorboard_log=tb_log_path)
+        elif algo_name == 'DQN':
+            from stable_baselines3 import DQN
+            algo = DQN.load(resume_from_checkpoint, env=vec_env, tensorboard_log=tb_log_path)
+        else:
+            raise ValueError(f"Unsupported algorithm for resume: {algo_name}")
+
+        if verbose > 0:
+            print(f"[Agent] Successfully loaded checkpoint, continuing training...")
+    else:
+        # Create new algorithm
+        if verbose > 0:
+            print(f"[Agent] Creating {train_config['algo'].upper()} algorithm...")
+
+        algo = create_algo(config, vec_env, tensorboard_log=tb_log_path)
+
     # Get algorithm info
     algo_info = get_algorithm_info(algo)
     if verbose > 0:
@@ -320,11 +342,14 @@ def train_agent(
     start_time = time.time()
     
     try:
+        # When resuming, don't reset timesteps to preserve progress
+        reset_timesteps = not bool(resume_from_checkpoint and Path(resume_from_checkpoint).exists())
+
         algo.learn(
             total_timesteps=total_timesteps,
             callback=callback_list,
             tb_log_name="training",
-            reset_num_timesteps=True,
+            reset_num_timesteps=reset_timesteps,
             progress_bar=True
         )
         
@@ -380,7 +405,14 @@ def main():
         default=1,
         help="Verbosity level (0=quiet, 1=normal, 2=verbose)"
     )
-    
+
+    parser.add_argument(
+        "--resume-from",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume training from"
+    )
+
     args = parser.parse_args()
     
     # Load configuration (epic-specific if available)
@@ -403,7 +435,8 @@ def main():
         checkpoint_path = train_agent(
             config=config,
             dryrun_seconds=args.dryrun_seconds,
-            verbose=args.verbose
+            verbose=args.verbose,
+            resume_from_checkpoint=args.resume_from
         )
         print(f"\n>> Training complete! Checkpoint: {checkpoint_path}")
 
@@ -431,17 +464,17 @@ def main():
             except ImportError:
                 # Fallback to basic CUDA error handling
                 print(f"ERROR: CUDA/GPU Training failed: {e}")
-                print("\n🔧 QUICK SOLUTIONS TO TRY:")
+                print("\n[SOLUTIONS] QUICK SOLUTIONS TO TRY:")
                 print("  1. Reduce batch size (try 128 or 64 instead of 256)")
                 print("  2. Reduce number of environments (try 4 or 2 instead of 8)")
                 print("  3. Close other GPU applications")
                 print("  4. Restart the application")
                 print("  5. Use CPU training instead")
-                print("\n💡 Check GPU memory usage and update NVIDIA drivers.")
+                print("\n[TIP] Check GPU memory usage and update NVIDIA drivers.")
         else:
             print(f"ERROR: Training failed: {e}")
 
-        print(f"\n📋 Full error details:")
+        print(f"\n[ERROR DETAILS] Full error details:")
         traceback.print_exc()
         sys.exit(1)
 
