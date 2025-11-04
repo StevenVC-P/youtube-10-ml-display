@@ -56,6 +56,9 @@ class RetroMLSimple:
         self.ml_database = MetricsDatabase(str(project_root / "ml_experiments.db"))
         self.ml_collector = MetricsCollector(self.ml_database)
 
+        # Connect database to process manager
+        self.process_manager.ml_database = self.ml_database
+
         # Initialize CUDA diagnostics
         self.cuda_diagnostics = CUDADiagnostics()
 
@@ -932,14 +935,11 @@ class RetroMLSimple:
                         if reward_match:
                             training_info['current_reward'] = f"{float(reward_match.group(1)):.2f}"
 
-                # Calculate progress percentage
-                if training_info['current_steps'] > 0 and training_info['total_steps'] > 0:
-                    training_info['progress_pct'] = (training_info['current_steps'] / training_info['total_steps']) * 100
-
-                    # Estimate time remaining (very rough)
-                    if training_info['progress_pct'] > 1:  # At least 1% done
-                        # This is a very rough estimate
-                        training_info['eta'] = f"~{int((100 - training_info['progress_pct']) * 2)} minutes"
+                # Only calculate progress percentage if we didn't already get it from logs
+                # This prevents overwriting the accurate percentage from the training script
+                if training_info['progress_pct'] == 0.0:
+                    if training_info['current_steps'] > 0 and training_info['total_steps'] > 0:
+                        training_info['progress_pct'] = (training_info['current_steps'] / training_info['total_steps']) * 100
 
         except Exception as e:
             print(f"Error parsing training logs for {process.id}: {e}")
@@ -1387,10 +1387,10 @@ class RetroMLSimple:
         try:
             # Handle both old preset-based config and new simple config
             if config.get('preset') == 'custom' or config.get('preset') not in self.presets:
-                # Use simple interface configuration
+                # Use simple interface configuration with optimized defaults
                 preset = {
                     'total_timesteps': config.get('total_timesteps', 4000000),
-                    'vec_envs': 4,
+                    'vec_envs': 16,  # Increased from 4 to 16 for better parallelization
                     'save_freq': 100000,
                     'extra_args': []
                 }
@@ -1398,22 +1398,26 @@ class RetroMLSimple:
                 # Use traditional preset
                 preset = self.presets[config['preset']]
 
-            # Prepare resource limits
+            # Prepare resource limits with optimized defaults
             resources = ResourceLimits(
-                cpu_affinity=list(range(config.get('cpu_cores', 4))),
+                cpu_affinity=list(range(config.get('cpu_cores', 12))),  # Increased from 4 to 12 cores
                 memory_limit_gb=config.get('memory_limit_gb'),
                 priority=config.get('priority', 'normal'),
                 gpu_id=config.get('gpu_id') if config.get('gpu_id') != 'auto' else None
             )
 
             # Debug: Print configuration being used
+            run_mode = config.get('run_mode', 'new')
             print(f"🔧 Starting training with config:")
+            print(f"   Mode: {run_mode}")
             print(f"   Game: {config['game']}")
             print(f"   Algorithm: {config['algorithm']}")
             print(f"   Timesteps: {config.get('total_timesteps', preset['total_timesteps'])}")
             print(f"   Vec Envs: {preset['vec_envs']}")
             print(f"   Save Freq: {preset['save_freq']}")
             print(f"   Output Path: {config.get('output_path')}")
+            if run_mode == 'continue':
+                print(f"   Resume From: {config.get('resume_checkpoint')}")
 
             # Create process
             process_id = self.process_manager.create_process(
@@ -1425,7 +1429,8 @@ class RetroMLSimple:
                 save_freq=preset['save_freq'],
                 resources=resources,
                 extra_args=preset.get('extra_args', []),
-                custom_output_path=config.get('output_path')
+                custom_output_path=config.get('output_path'),
+                resume_from_checkpoint=config.get('resume_checkpoint')
             )
 
             # Create experiment run in ML database
@@ -1444,13 +1449,19 @@ class RetroMLSimple:
             game_display = config.get('game_display', config['game'])
             system = config.get('system', 'Unknown')
             video_length = config.get('video_length_option', 'Standard Training')
+            run_mode = config.get('run_mode', 'new')
 
-            self._append_log(f"🚀 Started AI Training:")
+            if run_mode == 'continue':
+                self._append_log(f"▶️ Resuming AI Training:")
+            else:
+                self._append_log(f"🚀 Started AI Training:")
             self._append_log(f"   🕹️ System: {system}")
             self._append_log(f"   🎯 Game: {game_display}")
             self._append_log(f"   ⏱️ Length: {video_length}")
             self._append_log(f"   🤖 Algorithm: {config['algorithm'].upper()}")
             self._append_log(f"   🏷️ Run ID: {process_id}")
+            if run_mode == 'continue':
+                self._append_log(f"   🔄 Resuming from checkpoint")
             self._append_log(f"   📁 Videos: {config.get('output_path', 'Default location')}")
 
         except Exception as e:
@@ -1915,34 +1926,100 @@ class StartTrainingDialog:
 
         # Initialize game options based on system
         self.game_var = tk.StringVar()
-        self.game_combo = ctk.CTkOptionMenu(game_frame, variable=self.game_var, values=[""])
+        self.game_combo = ctk.CTkOptionMenu(game_frame, variable=self.game_var, values=[""],
+                                           command=self._on_game_changed)
         self.game_combo.pack(fill="x", padx=10, pady=(0, 10))
 
-        # Video Length Selection (Compact)
+        # Run Mode Selection (New vs Continue)
+        run_mode_frame = ctk.CTkFrame(main_frame)
+        run_mode_frame.pack(fill="x", pady=(0, 15))
+
+        ctk.CTkLabel(run_mode_frame, text="🔄 Training Mode:",
+                    font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", pady=(10, 5), padx=10)
+
+        self.run_mode_var = tk.StringVar(value="new")
+
+        # Radio buttons for mode selection
+        mode_container = ctk.CTkFrame(run_mode_frame)
+        mode_container.pack(fill="x", padx=10, pady=(0, 10))
+
+        new_run_radio = ctk.CTkRadioButton(mode_container, text="🆕 Start New Run",
+                                          variable=self.run_mode_var, value="new",
+                                          command=self._on_run_mode_changed)
+        new_run_radio.pack(side="left", padx=(10, 20))
+
+        continue_run_radio = ctk.CTkRadioButton(mode_container, text="▶️ Continue Previous Run",
+                                               variable=self.run_mode_var, value="continue",
+                                               command=self._on_run_mode_changed)
+        continue_run_radio.pack(side="left", padx=(0, 10))
+
+        # Previous runs dropdown (initially hidden)
+        self.previous_runs_frame = ctk.CTkFrame(run_mode_frame)
+        self.previous_runs_var = tk.StringVar()
+        self.previous_runs_combo = ctk.CTkOptionMenu(self.previous_runs_frame,
+                                                    variable=self.previous_runs_var,
+                                                    values=["No previous runs available"],
+                                                    command=self._on_previous_run_selected)
+        self.previous_runs_combo.pack(fill="x", padx=10, pady=(5, 10))
+
+        # Run info label
+        self.run_info_label = ctk.CTkLabel(self.previous_runs_frame, text="",
+                                          justify="left", font=ctk.CTkFont(size=11))
+        self.run_info_label.pack(anchor="w", padx=10, pady=(0, 10))
+
+        # Video Length Selection (Hour/Minute Input)
         video_frame = ctk.CTkFrame(main_frame)
         video_frame.pack(fill="x", pady=(0, 15), padx=10)
 
-        ctk.CTkLabel(video_frame, text="⏱️ Video Length:",
+        ctk.CTkLabel(video_frame, text="🎬 Target Video Length:",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(10, 5), padx=10)
 
-        self.video_length_var = tk.StringVar(value="Standard Training (4 hours)")
-        video_options = [
-            "Quick Demo (30 min)",
-            "Short Training (1 hour)",
-            "Standard Training (4 hours)",
-            "Epic Training (10 hours)",
-            "Custom Length"
-        ]
-        video_combo = ctk.CTkOptionMenu(video_frame, variable=self.video_length_var,
-                                      values=video_options, command=self._on_video_length_changed)
-        video_combo.pack(fill="x", padx=10, pady=(0, 10))
+        # Time input frame
+        time_input_frame = ctk.CTkFrame(video_frame)
+        time_input_frame.pack(fill="x", padx=10, pady=(0, 10))
 
-        # Custom length entry (initially hidden)
-        self.custom_length_frame = ctk.CTkFrame(video_frame)
-        self.custom_hours_var = tk.StringVar(value="2")
-        ctk.CTkLabel(self.custom_length_frame, text="Custom Hours:").pack(side="left", padx=(10, 5))
-        custom_entry = ctk.CTkEntry(self.custom_length_frame, textvariable=self.custom_hours_var, width=100)
-        custom_entry.pack(side="left", padx=(0, 10))
+        # Hours input
+        hours_frame = ctk.CTkFrame(time_input_frame)
+        hours_frame.pack(side="left", padx=(0, 20))
+
+        ctk.CTkLabel(hours_frame, text="Hours:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 5))
+        self.video_hours_var = tk.StringVar(value="4")
+        hours_entry = ctk.CTkEntry(hours_frame, textvariable=self.video_hours_var, width=60)
+        hours_entry.pack(side="left")
+
+        # Minutes input
+        minutes_frame = ctk.CTkFrame(time_input_frame)
+        minutes_frame.pack(side="left", padx=(0, 20))
+
+        ctk.CTkLabel(minutes_frame, text="Minutes:", font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 5))
+        self.video_minutes_var = tk.StringVar(value="0")
+        minutes_entry = ctk.CTkEntry(minutes_frame, textvariable=self.video_minutes_var, width=60)
+        minutes_entry.pack(side="left")
+
+        # Quick preset buttons
+        preset_frame = ctk.CTkFrame(time_input_frame)
+        preset_frame.pack(side="left", fill="x", expand=True)
+
+        ctk.CTkLabel(preset_frame, text="Quick Presets:", font=ctk.CTkFont(size=11)).pack(side="left", padx=(10, 5))
+
+        preset_buttons = [
+            ("30m", 0, 30),
+            ("1h", 1, 0),
+            ("4h", 4, 0),
+            ("10h", 10, 0)
+        ]
+
+        for label, hours, minutes in preset_buttons:
+            btn = ctk.CTkButton(preset_frame, text=label, width=50, height=24,
+                              command=lambda h=hours, m=minutes: self._set_video_length_preset(h, m))
+            btn.pack(side="left", padx=2)
+
+        # Info label
+        self.video_length_info = ctk.CTkLabel(video_frame,
+                                             text="Training will run long enough to generate this much video content",
+                                             font=ctk.CTkFont(size=10),
+                                             text_color="gray")
+        self.video_length_info.pack(anchor="w", padx=10, pady=(0, 10))
 
         # Initialize variables
         self.resource_config = None
@@ -2009,36 +2086,44 @@ class StartTrainingDialog:
             }
         }
 
-    def _get_video_length_config(self, length_option):
-        """Get training configuration for video length option."""
-        configs = {
-            "Quick Demo (30 min)": {
-                "target_hours": 0.5,
-                "timesteps": 1000000,
-                "milestones": 3
-            },
-            "Short Training (1 hour)": {
-                "target_hours": 1,
-                "timesteps": 2000000,
-                "milestones": 4
-            },
-            "Standard Training (4 hours)": {
+    def _set_video_length_preset(self, hours, minutes):
+        """Set video length from preset button."""
+        self.video_hours_var.set(str(hours))
+        self.video_minutes_var.set(str(minutes))
+        self._update_summary()
+
+    def _get_video_length_config(self):
+        """Get training configuration based on video length input."""
+        try:
+            hours = float(self.video_hours_var.get()) if self.video_hours_var.get() else 0
+            minutes = float(self.video_minutes_var.get()) if self.video_minutes_var.get() else 0
+
+            # Convert to total hours
+            total_hours = hours + (minutes / 60.0)
+
+            # Ensure minimum of 0.5 hours (30 minutes)
+            if total_hours < 0.5:
+                total_hours = 0.5
+
+            # Calculate timesteps (roughly 1M timesteps per hour for most Atari games)
+            # This is an estimate - actual training speed varies by game
+            timesteps = int(total_hours * 1000000)
+
+            # Calculate number of milestones (one every 10% of progress, minimum 3)
+            milestones = max(3, min(10, int(total_hours * 2)))
+
+            return {
+                "target_hours": total_hours,
+                "timesteps": timesteps,
+                "milestones": milestones
+            }
+        except (ValueError, AttributeError):
+            # Default to 4 hours if there's an error
+            return {
                 "target_hours": 4,
                 "timesteps": 4000000,
                 "milestones": 8
-            },
-            "Epic Training (10 hours)": {
-                "target_hours": 10,
-                "timesteps": 10000000,
-                "milestones": 10
-            },
-            "Custom Length": {
-                "target_hours": float(self.custom_hours_var.get()) if hasattr(self, 'custom_hours_var') else 2,
-                "timesteps": int(float(self.custom_hours_var.get()) * 1000000) if hasattr(self, 'custom_hours_var') else 2000000,
-                "milestones": max(3, int(float(self.custom_hours_var.get()))) if hasattr(self, 'custom_hours_var') else 4
             }
-        }
-        return configs.get(length_option, configs["Standard Training (4 hours)"])
 
     def _on_system_changed(self, system_name):
         """Handle gaming system selection change."""
@@ -2052,12 +2137,103 @@ class StartTrainingDialog:
 
         self._update_summary()
 
-    def _on_video_length_changed(self, length_option):
-        """Handle video length selection change."""
-        if length_option == "Custom Length":
-            self.custom_length_frame.pack(fill="x", padx=10, pady=(0, 10))
+    def _on_game_changed(self, game_name):
+        """Handle game selection change."""
+        # Update available previous runs when game changes
+        if self.run_mode_var.get() == "continue":
+            self._update_previous_runs()
+        self._update_summary()
+
+    def _on_run_mode_changed(self):
+        """Handle run mode selection change."""
+        if self.run_mode_var.get() == "continue":
+            # Show previous runs dropdown
+            self.previous_runs_frame.pack(fill="x", padx=10, pady=(0, 10))
+            self._update_previous_runs()
         else:
-            self.custom_length_frame.pack_forget()
+            # Hide previous runs dropdown
+            self.previous_runs_frame.pack_forget()
+            # Generate new run ID
+            self.run_id_var.set(generate_run_id())
+
+    def _update_previous_runs(self):
+        """Update the list of previous runs for the selected game."""
+        try:
+            # Get the selected game environment ID
+            system = self.system_var.get()
+            game_display = self.game_var.get()
+            systems = self._get_game_systems()
+            game_env_id = systems.get(system, {}).get(game_display)
+
+            if not game_env_id:
+                self.previous_runs_combo.configure(values=["No game selected"])
+                return
+
+            # Get ML database from parent
+            if hasattr(self.parent, 'process_manager') and hasattr(self.parent.process_manager, 'ml_database'):
+                ml_db = self.parent.process_manager.ml_database
+
+                # Get previous runs for this game, excluding active ones
+                previous_runs = ml_db.get_runs_by_game(game_env_id, exclude_active=True)
+
+                if previous_runs:
+                    # Format run options: "run_id - status - progress% - reward"
+                    run_options = []
+                    self.run_data = {}  # Store run data for later use
+
+                    for run in previous_runs:
+                        # Calculate progress percentage
+                        progress = 0
+                        if run.config and run.config.total_timesteps:
+                            progress = int((run.current_timestep / run.config.total_timesteps) * 100)
+
+                        # Format display string
+                        reward_str = f"{run.best_reward:.1f}" if run.best_reward else "N/A"
+                        display = f"{run.run_id} - {run.status} - {progress}% - Reward: {reward_str}"
+                        run_options.append(display)
+                        self.run_data[display] = run
+
+                    self.previous_runs_combo.configure(values=run_options)
+                    if run_options:
+                        self.previous_runs_var.set(run_options[0])
+                        self._on_previous_run_selected(run_options[0])
+                else:
+                    self.previous_runs_combo.configure(values=["No previous runs for this game"])
+                    self.run_info_label.configure(text="")
+            else:
+                self.previous_runs_combo.configure(values=["Database not available"])
+
+        except Exception as e:
+            print(f"Error updating previous runs: {e}")
+            self.previous_runs_combo.configure(values=["Error loading runs"])
+
+    def _on_previous_run_selected(self, run_display):
+        """Handle previous run selection."""
+        try:
+            if hasattr(self, 'run_data') and run_display in self.run_data:
+                run = self.run_data[run_display]
+
+                # Update run ID
+                self.run_id_var.set(run.run_id)
+
+                # Display run information
+                info_lines = []
+                if run.start_time:
+                    info_lines.append(f"Started: {run.start_time.strftime('%Y-%m-%d %H:%M')}")
+                if run.current_timestep:
+                    info_lines.append(f"Timesteps: {run.current_timestep:,}")
+                if run.best_reward is not None:
+                    info_lines.append(f"Best Reward: {run.best_reward:.2f}")
+
+                info_text = " | ".join(info_lines) if info_lines else "No additional info"
+                self.run_info_label.configure(text=info_text)
+            else:
+                self.run_info_label.configure(text="")
+        except Exception as e:
+            print(f"Error selecting previous run: {e}")
+            self.run_info_label.configure(text="")
+
+
 
         self._update_summary()
 
@@ -2073,13 +2249,23 @@ class StartTrainingDialog:
         try:
             system = self.system_var.get()
             game_display = self.game_var.get()
-            length = self.video_length_var.get()
 
             # Get video config
-            video_config = self._get_video_length_config(length)
+            video_config = self._get_video_length_config()
+
+            # Format video length display
+            hours = int(video_config['target_hours'])
+            minutes = int((video_config['target_hours'] - hours) * 60)
+
+            if hours > 0 and minutes > 0:
+                length_str = f"{hours}h {minutes}m"
+            elif hours > 0:
+                length_str = f"{hours}h"
+            else:
+                length_str = f"{minutes}m"
 
             summary_text = (
-                f"📋 {system} • {game_display} • {length} • {video_config['target_hours']} hours"
+                f"📋 {system} • {game_display} • {length_str} video • ~{video_config['timesteps']:,} steps"
             )
 
             self.summary_label.configure(text=summary_text)
@@ -2182,10 +2368,37 @@ class StartTrainingDialog:
             game_env_id = systems.get(system, {}).get(game_display, "ALE/Breakout-v5")
 
             # Get video length configuration
-            video_config = self._get_video_length_config(self.video_length_var.get())
+            video_config = self._get_video_length_config()
 
             # Get algorithm (clean up the display name)
             algorithm = self.algo_var.get().lower()  # "PPO" -> "ppo"
+
+            # Determine if resuming from checkpoint
+            run_mode = self.run_mode_var.get()
+            resume_checkpoint = None
+
+            if run_mode == "continue":
+                # Get the checkpoint path for the selected run
+                run_id = self.run_id_var.get()
+                checkpoint_path = Path(f"models/checkpoints/{run_id}/latest.zip")
+
+                if checkpoint_path.exists():
+                    resume_checkpoint = str(checkpoint_path)
+                else:
+                    messagebox.showerror("Error",
+                                       f"Checkpoint not found for run {run_id}.\n"
+                                       f"Expected: {checkpoint_path}")
+                    return
+
+            # Format video length for display
+            hours = int(video_config['target_hours'])
+            minutes = int((video_config['target_hours'] - hours) * 60)
+            if hours > 0 and minutes > 0:
+                video_length_display = f"{hours}h {minutes}m"
+            elif hours > 0:
+                video_length_display = f"{hours}h"
+            else:
+                video_length_display = f"{minutes}m"
 
             # Build result configuration
             self.result = {
@@ -2199,10 +2412,12 @@ class StartTrainingDialog:
                 'target_hours': video_config['target_hours'],
                 'milestone_videos': video_config['milestones'],
                 'output_path': self.output_path_var.get(),
-                'video_length_option': self.video_length_var.get(),
+                'video_length_option': video_length_display,
                 'priority': 'normal',
-                # Use default resource configuration
-                'cpu_cores': 4,
+                'resume_checkpoint': resume_checkpoint,  # Add checkpoint path
+                'run_mode': run_mode,  # Add run mode
+                # Use optimized resource configuration for faster training
+                'cpu_cores': 12,  # Increased from 4 to 12 cores
                 'memory_limit_gb': 16,
                 'gpu_id': 'auto'
             }
