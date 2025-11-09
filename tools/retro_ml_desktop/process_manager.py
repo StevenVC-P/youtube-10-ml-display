@@ -51,6 +51,7 @@ class ProcessManager:
         self._log_callbacks: Dict[str, List[Callable[[str], None]]] = {}
         self._log_buffers: Dict[str, str] = {}  # Store logs for progress parsing
         self._temp_configs: Dict[str, str] = {}  # Track temp config files
+        self.ml_database = None  # Will be set by the main application
 
         # Ensure we can find the training script and base config
         self.train_script = self.project_root / "training" / "train.py"
@@ -87,8 +88,14 @@ class ProcessManager:
                     exit_code = process_info.process.poll()
                     if exit_code == 0:
                         process_info.status = "finished"
+                        # Mark run as inactive in database
+                        if self.ml_database:
+                            self.ml_database.mark_run_inactive(process_info.id, 'completed')
                     else:
                         process_info.status = "failed"
+                        # Mark run as inactive in database
+                        if self.ml_database:
+                            self.ml_database.mark_run_inactive(process_info.id, 'failed')
 
                         # Enhanced error analysis for CUDA/GPU issues
                         recent_logs = self.get_recent_logs(process_info.id)
@@ -154,13 +161,41 @@ class ProcessManager:
         save_freq: int = 200000,
         resources: Optional[ResourceLimits] = None,
         extra_args: Optional[List[str]] = None,
-        custom_output_path: str = None
+        custom_output_path: str = None,
+        resume_from_checkpoint: str = None
     ) -> str:
-        """Create and start a new training process."""
+        """
+        Create and start a new training process.
+
+        Args:
+            game: Game environment ID
+            algorithm: Algorithm to use (ppo, dqn, etc.)
+            run_id: Run ID (generated if not provided)
+            total_timesteps: Total timesteps to train
+            vec_envs: Number of vectorized environments
+            save_freq: Checkpoint save frequency
+            resources: Resource limits
+            extra_args: Extra command-line arguments
+            custom_output_path: Custom output path for videos
+            resume_from_checkpoint: Path to checkpoint to resume from (optional)
+
+        Returns:
+            Process ID
+
+        Raises:
+            ValueError: If run_id is already active
+        """
 
         # Generate run ID if not provided
         if not run_id:
             run_id = f"run-{secrets.token_hex(4)}"
+
+        # Validate that run_id is not already active
+        if self.ml_database and self.ml_database.is_run_active(run_id):
+            raise ValueError(
+                f"Run ID '{run_id}' is already active. "
+                "Cannot start the same run multiple times to prevent data corruption."
+            )
 
         # Create custom config for this training run
         config_data = self.base_config_data.copy()
@@ -235,6 +270,10 @@ class ProcessManager:
             "--config", temp_config.name,
             "--verbose", "1"
         ]
+
+        # Add checkpoint path if resuming
+        if resume_from_checkpoint:
+            command.extend(["--resume-from", resume_from_checkpoint])
 
         # Add extra arguments
         if extra_args:
@@ -373,6 +412,10 @@ class ProcessManager:
 
             process_info.status = "stopped"
             process_info.process = None
+
+            # Mark run as inactive in database
+            if self.ml_database:
+                self.ml_database.mark_run_inactive(process_id, 'stopped')
 
             # Stop log streaming
             self._stop_log_stream(process_id)
