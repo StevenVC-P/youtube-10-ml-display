@@ -2102,9 +2102,9 @@ class StartTrainingDialog:
             # Convert to total hours
             total_hours = hours + (minutes / 60.0)
 
-            # Ensure minimum of 0.5 hours (30 minutes)
-            if total_hours < 0.5:
-                total_hours = 0.5
+            # Ensure minimum of 1 minute (0.0167 hours) to prevent accidental zero-length training
+            if total_hours < 0.0167:
+                total_hours = 0.0167
 
             # Calculate timesteps (roughly 1M timesteps per hour for most Atari games)
             # This is an estimate - actual training speed varies by game
