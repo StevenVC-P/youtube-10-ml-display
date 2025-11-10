@@ -220,28 +220,37 @@ class PostTrainingVideoGenerator:
             return None
     
     def _record_gameplay_frames(self, model, env) -> List[np.ndarray]:
-        """Record gameplay frames using the trained model."""
+        """Record gameplay frames with neural network visualization using the trained model."""
         frames = []
         target_frames = self.clip_seconds * self.fps
-        
+
         obs, _ = env.reset()
-        
+        total_reward = 0.0
+
         for frame_idx in range(target_frames):
             # Get frame from environment
-            frame = env.render()
-            if frame is not None:
-                frames.append(frame)
-            
+            game_frame = env.render()
+
+            if game_frame is not None:
+                # Extract ML analytics for this frame
+                analytics = self._extract_ml_analytics(model, obs, frame_idx, total_reward)
+
+                # Create enhanced frame with neural network visualization
+                enhanced_frame = self._create_enhanced_frame(game_frame, analytics)
+                frames.append(enhanced_frame)
+
             # Get action from model
             action, _ = model.predict(obs, deterministic=True)
-            
+
             # Step environment
             obs, reward, terminated, truncated, info = env.step(action)
-            
+            total_reward += reward
+
             # Reset if episode ends
             if terminated or truncated:
                 obs, _ = env.reset()
-        
+                total_reward = 0.0
+
         return frames
     
     def _create_video_from_frames(self, frames: List[np.ndarray], output_path: Path) -> bool:
@@ -249,28 +258,256 @@ class PostTrainingVideoGenerator:
         try:
             if not frames:
                 return False
-            
+
             # Get frame dimensions
             height, width = frames[0].shape[:2]
-            
+
             # Create video writer
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(str(output_path), fourcc, self.fps, (width, height))
-            
+
             # Write frames
             for frame in frames:
-                # Convert RGB to BGR for OpenCV
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                out.write(frame_bgr)
-            
+                # Frames are already in BGR format from _create_enhanced_frame
+                out.write(frame)
+
             # Release video writer
             out.release()
-            
+
             return output_path.exists()
-            
+
         except Exception as e:
             print(f"[PostVideo] Error creating video: {e}")
             return False
+
+    def _extract_ml_analytics(self, model, obs: np.ndarray, frame_idx: int, total_reward: float) -> Dict[str, Any]:
+        """Extract ML analytics from the current model state."""
+        analytics = {
+            'step': frame_idx,
+            'frame_in_video': frame_idx,
+            'progress_pct': (frame_idx / (self.clip_seconds * self.fps)) * 100,
+            'action_probs': None,
+            'value_estimate': 0.0,
+            'episode_reward': total_reward
+        }
+
+        try:
+            if hasattr(model, 'policy'):
+                # Prepare observation for policy
+                # Gymnasium returns observations in shape (H, W, C) but PyTorch expects (C, H, W)
+                import torch
+
+                if len(obs.shape) == 3:
+                    # Shape is (H, W, C), need to transpose to (C, H, W) and add batch dimension
+                    obs_tensor = np.transpose(obs, (2, 0, 1))  # (H, W, C) -> (C, H, W)
+                    obs_tensor = obs_tensor[np.newaxis, ...]   # (C, H, W) -> (1, C, H, W)
+                elif len(obs.shape) == 4:
+                    # Already has batch dimension, just transpose
+                    obs_tensor = np.transpose(obs, (0, 3, 1, 2))  # (B, H, W, C) -> (B, C, H, W)
+                else:
+                    obs_tensor = obs[np.newaxis, ...]
+
+                # Convert to torch tensor
+                obs_tensor = torch.as_tensor(obs_tensor).float()
+
+                # Get action probabilities and value estimate
+                with torch.no_grad():
+                    # Get policy distribution
+                    if hasattr(model.policy, 'get_distribution'):
+                        distribution = model.policy.get_distribution(obs_tensor)
+                        if hasattr(distribution, 'distribution') and hasattr(distribution.distribution, 'probs'):
+                            analytics['action_probs'] = distribution.distribution.probs[0].cpu().numpy()
+
+                    # Get value estimate
+                    if hasattr(model.policy, 'predict_values'):
+                        values = model.policy.predict_values(obs_tensor)
+                        if values is not None:
+                            analytics['value_estimate'] = float(values[0].cpu().numpy().item())
+
+        except Exception as e:
+            if self.verbose >= 2:
+                print(f"[PostVideo] Analytics extraction error: {e}")
+
+        return analytics
+
+    def _create_enhanced_frame(self, game_frame: np.ndarray, analytics: Dict[str, Any]) -> np.ndarray:
+        """Create enhanced frame with neural network visualization."""
+        # Resize game frame to fit right side (480x540)
+        game_resized = cv2.resize(game_frame, (480, 540))
+
+        # Create analytics panel (left side, 480x540)
+        analytics_panel = np.zeros((540, 480, 3), dtype=np.uint8)
+
+        # Draw neural network and analytics
+        self._draw_analytics_panel(analytics_panel, analytics)
+        self._draw_neural_network(analytics_panel, analytics)
+
+        # Combine panels horizontally (total: 960x540)
+        enhanced_frame = np.hstack([analytics_panel, game_resized])
+
+        # Convert RGB to BGR for OpenCV (game_frame is RGB from render())
+        enhanced_frame = cv2.cvtColor(enhanced_frame, cv2.COLOR_RGB2BGR)
+
+        return enhanced_frame
+
+    def _draw_analytics_panel(self, panel: np.ndarray, analytics: Dict[str, Any]) -> None:
+        """Draw ML analytics information on the panel."""
+        # Colors
+        white = (255, 255, 255)
+        yellow = (0, 255, 255)
+        green = (0, 255, 0)
+        blue = (255, 0, 0)
+
+        # Font
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        mono_font = cv2.FONT_HERSHEY_SIMPLEX
+
+        # Get game name from config
+        game_name = self.config.get('game', {}).get('env_id', 'ATARI').split('/')[-1].split('-')[0].upper()
+        algo_name = self.config.get('train', {}).get('algo', 'PPO').upper()
+
+        # Title
+        cv2.putText(panel, f"{game_name} - {algo_name} Neural Activity Viewer", (10, 30), font, 0.5, white, 1)
+
+        # Subtitle with training parameters
+        progress = analytics.get('progress_pct', 0)
+        lr = self.config.get('train', {}).get('learning_rate', 0.00025)
+        cv2.putText(panel, f"Post-Training Evaluation | Progress: {progress:.1f}% | lr={lr:.1e}", (10, 50), font, 0.35, (180, 180, 180), 1)
+
+        # Training metrics
+        y_pos = 80
+        line_height = 20
+
+        frame_idx = analytics.get('frame_in_video', 0)
+        episode_reward = analytics.get('episode_reward', 0.0)
+
+        cv2.putText(panel, f"Frame:      {frame_idx:,}", (10, int(y_pos)), mono_font, 0.4, white, 1)
+        y_pos += line_height
+        cv2.putText(panel, f"Progress:   {progress:.2f}%", (10, int(y_pos)), mono_font, 0.4, white, 1)
+        y_pos += line_height
+        cv2.putText(panel, f"Ep Reward:  {episode_reward:.1f}", (10, int(y_pos)), mono_font, 0.4, white, 1)
+        y_pos += line_height * 1.5
+
+        # Action probabilities
+        action_names = ['NOOP', 'FIRE', 'RIGHT', 'LEFT']
+        action_probs = analytics.get('action_probs')
+
+        if action_probs is not None and len(action_probs) >= 4:
+            cv2.putText(panel, "Policy Distribution:", (10, int(y_pos)), mono_font, 0.4, (200, 200, 200), 1)
+            y_pos += line_height * 0.8
+
+            for i, (name, prob) in enumerate(zip(action_names, action_probs[:4])):
+                color = yellow if prob == max(action_probs[:4]) else (150, 150, 150)
+                cv2.putText(panel, f"  {name:5s}: {prob:.3f}", (10, int(y_pos)), mono_font, 0.35, color, 1)
+                y_pos += line_height * 0.8
+
+        y_pos += line_height * 0.5
+
+        # Value estimate
+        value = analytics.get('value_estimate', 0.0)
+        cv2.putText(panel, f"Value Est:  {value:.3f}", (10, int(y_pos)), mono_font, 0.4, green, 1)
+
+    def _draw_neural_network(self, panel: np.ndarray, analytics: Dict[str, Any]) -> None:
+        """Draw neural network visualization with realistic architecture."""
+        # Network area
+        net_x, net_y = 20, 280
+        net_width, net_height = 440, 240
+
+        # Layer configuration (realistic CNN for Atari)
+        layers = [
+            {'name': 'Input', 'shape': '84×84×4', 'nodes': 8, 'color': (0, 255, 0)},      # Green
+            {'name': 'Conv1', 'shape': '32@20×20', 'nodes': 6, 'color': (255, 100, 0)},   # Blue
+            {'name': 'Conv2', 'shape': '64@9×9', 'nodes': 6, 'color': (255, 100, 0)},     # Blue
+            {'name': 'Dense', 'shape': '512', 'nodes': 8, 'color': (100, 100, 255)},      # Light blue
+            {'name': 'Output', 'shape': '4', 'nodes': 4, 'color': (0, 165, 255)}          # Orange
+        ]
+
+        # Calculate positions
+        layer_spacing = net_width // (len(layers) - 1)
+        layer_positions = []
+
+        for i, layer in enumerate(layers):
+            x = net_x + i * layer_spacing
+            nodes = layer['nodes']
+            node_spacing = net_height // (nodes + 1)
+
+            positions = []
+            for j in range(nodes):
+                y = net_y + (j + 1) * node_spacing
+                positions.append((x, y))
+
+            layer_positions.append(positions)
+
+        # Draw connections with animation
+        step = analytics.get('step', 0)
+        for i in range(len(layer_positions) - 1):
+            current_layer = layer_positions[i]
+            next_layer = layer_positions[i + 1]
+
+            for j, start_pos in enumerate(current_layer):
+                for k, end_pos in enumerate(next_layer):
+                    # Simulate connection strength with some animation
+                    strength = 0.3 + 0.4 * np.sin(step * 0.01 + j * 0.5 + k * 0.3)
+
+                    if strength > 0.6:  # Only draw strong connections
+                        alpha = int(strength * 255)
+                        color = (alpha // 3, alpha // 3, alpha)
+                        thickness = 1 if strength > 0.7 else 1
+                        cv2.line(panel, start_pos, end_pos, color, thickness)
+
+        # Draw nodes
+        action_names = ['NOOP', 'FIRE', 'RIGHT', 'LEFT']
+        action_probs = analytics.get('action_probs', [0.25, 0.25, 0.25, 0.25])
+
+        for layer_idx, (layer, positions) in enumerate(zip(layers, layer_positions)):
+            for node_idx, pos in enumerate(positions):
+                # Node activation (simulated)
+                if layer_idx == len(layers) - 1:  # Output layer
+                    if node_idx < len(action_probs):
+                        activation = action_probs[node_idx]
+                    else:
+                        activation = 0.25
+                else:
+                    activation = 0.3 + 0.4 * np.sin(step * 0.02 + layer_idx * 0.8 + node_idx * 0.4)
+
+                # Node color based on activation
+                base_color = layer['color']
+                brightness = int(activation * 255)
+                node_color = tuple(int(c * brightness / 255) for c in base_color)
+
+                # Draw node
+                radius = 8 if layer_idx == len(layers) - 1 else 6
+                cv2.circle(panel, pos, radius, node_color, -1)
+                cv2.circle(panel, pos, radius, (255, 255, 255), 1)
+
+                # Highlight chosen action
+                if layer_idx == len(layers) - 1 and action_probs is not None:
+                    if node_idx < len(action_probs) and action_probs[node_idx] == max(action_probs):
+                        # Pulsing effect
+                        pulse = int(128 + 127 * np.sin(step * 0.1))
+                        cv2.circle(panel, pos, radius + 2, (pulse, pulse, pulse), 2)
+
+        # Layer labels
+        for layer_idx, (layer, positions) in enumerate(zip(layers, layer_positions)):
+            if positions:
+                label_x = positions[0][0]
+                label_y = net_y + net_height + 20
+
+                # Layer name
+                cv2.putText(panel, layer['name'], (label_x - 20, label_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+
+                # Layer shape
+                cv2.putText(panel, layer['shape'], (label_x - 20, label_y + 15),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, (150, 150, 150), 1)
+
+        # Output action labels
+        if len(layer_positions) > 0:
+            output_positions = layer_positions[-1]
+            for i, (pos, name) in enumerate(zip(output_positions, action_names)):
+                if i < len(output_positions):
+                    cv2.putText(panel, name, (pos[0] + 15, pos[1] + 5),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.3, (180, 180, 180), 1)
 
 
 def main():
