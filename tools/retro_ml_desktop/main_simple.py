@@ -323,6 +323,12 @@ class RetroMLSimple:
                                          command=self._refresh_videos)
         refresh_videos_btn.pack(side="left", padx=5, pady=5)
 
+        # Generate videos button (NEW!)
+        generate_videos_btn = ctk.CTkButton(controls_frame, text="🎥 Generate Videos from Training",
+                                           command=self._generate_videos_dialog,
+                                           fg_color="#007bff", hover_color="#0056b3")
+        generate_videos_btn.pack(side="left", padx=5, pady=5)
+
         # Open video folder button
         open_folder_btn = ctk.CTkButton(controls_frame, text="📁 Open Video Folder",
                                        command=self._open_video_folder)
@@ -1012,22 +1018,40 @@ class RetroMLSimple:
         try:
             # Get all processes to find their output paths
             processes = self.process_manager.get_processes()
+            self._append_log(f"🔍 Scanning videos for {len(processes)} training processes...")
 
             # Check each process's output directory
             for process in processes:
                 output_paths = self.process_manager.get_process_output_paths(process.id)
                 if output_paths:
-                    videos.extend(self._scan_process_videos(process, output_paths))
+                    self._append_log(f"  📂 Checking process {process.name} (ID: {process.id[:8]}...)")
+                    self._append_log(f"     Milestones: {output_paths.get('videos_milestones', 'N/A')}")
+                    self._append_log(f"     Eval: {output_paths.get('videos_eval', 'N/A')}")
+                    self._append_log(f"     Parts: {output_paths.get('videos_parts', 'N/A')}")
+                    process_videos = self._scan_process_videos(process, output_paths)
+                    if process_videos:
+                        self._append_log(f"     ✅ Found {len(process_videos)} video(s)")
+                    videos.extend(process_videos)
 
             # Also check default outputs directory
             default_outputs = self.project_root / "outputs"
             if default_outputs.exists():
+                self._append_log(f"🔍 Scanning default outputs directory: {default_outputs}")
                 for run_dir in default_outputs.iterdir():
                     if run_dir.is_dir():
-                        videos.extend(self._scan_directory_videos(run_dir, run_dir.name))
+                        dir_videos = self._scan_directory_videos(run_dir, run_dir.name)
+                        if dir_videos:
+                            self._append_log(f"  ✅ Found {len(dir_videos)} video(s) in {run_dir.name}")
+                        videos.extend(dir_videos)
+
+            self._append_log(f"✅ Video discovery complete: Found {len(videos)} total video(s)")
 
         except Exception as e:
-            print(f"Error discovering videos: {e}")
+            error_msg = f"Error discovering videos: {e}"
+            print(error_msg)
+            self._append_log(f"❌ {error_msg}")
+            import traceback
+            traceback.print_exc()
 
         return videos
 
@@ -1038,27 +1062,46 @@ class RetroMLSimple:
         try:
             # Scan milestone videos
             milestones_path = output_paths.get('videos_milestones')
-            if milestones_path and Path(milestones_path).exists():
-                videos.extend(self._scan_video_directory(
-                    Path(milestones_path), "Milestone", process.name
-                ))
+            if milestones_path:
+                milestone_path_obj = Path(milestones_path)
+                if milestone_path_obj.exists():
+                    milestone_videos = self._scan_video_directory(
+                        milestone_path_obj, "Milestone", process.name
+                    )
+                    videos.extend(milestone_videos)
+                else:
+                    self._append_log(f"     ⚠️ Milestone directory does not exist: {milestones_path}")
 
             # Scan evaluation videos
             eval_path = output_paths.get('videos_eval')
-            if eval_path and Path(eval_path).exists():
-                videos.extend(self._scan_video_directory(
-                    Path(eval_path), "Evaluation", process.name
-                ))
+            if eval_path:
+                eval_path_obj = Path(eval_path)
+                if eval_path_obj.exists():
+                    eval_videos = self._scan_video_directory(
+                        eval_path_obj, "Evaluation", process.name
+                    )
+                    videos.extend(eval_videos)
+                else:
+                    self._append_log(f"     ⚠️ Eval directory does not exist: {eval_path}")
 
             # Scan hour/part videos
             parts_path = output_paths.get('videos_parts')
-            if parts_path and Path(parts_path).exists():
-                videos.extend(self._scan_video_directory(
-                    Path(parts_path), "Hour", process.name
-                ))
+            if parts_path:
+                parts_path_obj = Path(parts_path)
+                if parts_path_obj.exists():
+                    part_videos = self._scan_video_directory(
+                        parts_path_obj, "Hour", process.name
+                    )
+                    videos.extend(part_videos)
+                else:
+                    self._append_log(f"     ⚠️ Parts directory does not exist: {parts_path}")
 
         except Exception as e:
-            print(f"Error scanning process videos for {process.id}: {e}")
+            error_msg = f"Error scanning process videos for {process.id}: {e}"
+            print(error_msg)
+            self._append_log(f"     ❌ {error_msg}")
+            import traceback
+            traceback.print_exc()
 
         return videos
 
@@ -1373,7 +1416,222 @@ class RetroMLSimple:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open video folder: {e}")
             self._append_log(f"❌ Failed to open video folder: {e}")
-    
+
+    def _generate_videos_dialog(self):
+        """Show dialog to generate videos from completed training runs."""
+        try:
+            # Get all processes from process manager
+            tracked_processes = self.process_manager.get_processes()
+
+            # Also scan for any training runs with checkpoints (even if not currently tracked)
+            checkpoint_base = self.project_root / "models" / "checkpoints"
+            all_runs = []
+
+            # Add tracked processes
+            for process in tracked_processes:
+                all_runs.append({
+                    'id': process.id,
+                    'name': process.name,
+                    'status': process.status,
+                    'tracked': True
+                })
+
+            # Scan for untracked runs with checkpoints
+            if checkpoint_base.exists():
+                for run_dir in checkpoint_base.iterdir():
+                    if run_dir.is_dir() and run_dir.name.startswith('run-'):
+                        run_id = run_dir.name
+                        # Check if already tracked
+                        if not any(r['id'] == run_id for r in all_runs):
+                            # Check if it has checkpoints
+                            milestone_dir = run_dir / "milestones"
+                            if milestone_dir.exists() and list(milestone_dir.glob("*.zip")):
+                                all_runs.append({
+                                    'id': run_id,
+                                    'name': f"Untracked Run ({run_id[:8]}...)",
+                                    'status': 'unknown',
+                                    'tracked': False
+                                })
+
+            if not all_runs:
+                messagebox.showinfo("No Training Runs",
+                                  "No training runs with checkpoints found.\n\n"
+                                  "Start a training session first, or check that your training runs saved checkpoints.")
+                return
+
+            # Create dialog
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Generate Videos from Training")
+            dialog.geometry("700x500")
+            dialog.transient(self.root)
+            dialog.grab_set()
+
+            # Title
+            title_label = ctk.CTkLabel(dialog, text="🎥 Generate Videos from Training Checkpoints",
+                                      font=ctk.CTkFont(size=16, weight="bold"))
+            title_label.pack(pady=15)
+
+            # Info label
+            info_label = ctk.CTkLabel(dialog,
+                                     text="Select a training run to generate milestone videos from saved checkpoints.\n"
+                                          "This creates videos showing agent performance at different training stages.",
+                                     font=ctk.CTkFont(size=11))
+            info_label.pack(pady=5)
+
+            # Training run selection frame
+            selection_frame = ctk.CTkFrame(dialog)
+            selection_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+            # List of training runs
+            runs_label = ctk.CTkLabel(selection_frame, text="Select Training Run:",
+                                     font=ctk.CTkFont(size=12, weight="bold"))
+            runs_label.pack(pady=5)
+
+            # Create listbox for runs
+            runs_listbox = tk.Listbox(selection_frame, height=10)
+            runs_listbox.pack(fill="both", expand=True, padx=10, pady=5)
+
+            # Populate with training runs
+            run_data = []
+            for run_info in all_runs:
+                # Check for checkpoints in the correct location: models/checkpoints/{run_id}/milestones/
+                checkpoint_dir = self.project_root / "models" / "checkpoints" / run_info['id'] / "milestones"
+
+                # Count checkpoints
+                checkpoint_count = 0
+                if checkpoint_dir.exists():
+                    checkpoint_count = len(list(checkpoint_dir.glob("*.zip")))
+
+                # Status icon
+                status = run_info['status']
+                if status == "completed":
+                    status_icon = "✅"
+                elif status == "running":
+                    status_icon = "🔄"
+                elif status == "unknown":
+                    status_icon = "📦"  # Untracked run
+                else:
+                    status_icon = "⏸️"
+
+                display_text = f"{status_icon} {run_info['name']} - {run_info['id'][:8]}... ({checkpoint_count} checkpoints)"
+                runs_listbox.insert(tk.END, display_text)
+                run_data.append(run_info)
+
+            # Options frame
+            options_frame = ctk.CTkFrame(dialog)
+            options_frame.pack(fill="x", padx=20, pady=10)
+
+            # Clip length option
+            clip_label = ctk.CTkLabel(options_frame, text="Video Clip Length (seconds):")
+            clip_label.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+
+            clip_var = tk.StringVar(value="90")
+            clip_entry = ctk.CTkEntry(options_frame, textvariable=clip_var, width=100)
+            clip_entry.grid(row=0, column=1, padx=5, pady=5)
+
+            # Buttons frame
+            buttons_frame = ctk.CTkFrame(dialog)
+            buttons_frame.pack(fill="x", padx=20, pady=10)
+
+            def generate_videos():
+                """Generate videos for selected run."""
+                selection = runs_listbox.curselection()
+                if not selection:
+                    messagebox.showwarning("No Selection", "Please select a training run first.")
+                    return
+
+                selected_run = run_data[selection[0]]
+                run_id = selected_run['id']
+                run_name = selected_run['name']
+
+                try:
+                    clip_seconds = int(clip_var.get())
+                    if clip_seconds <= 0:
+                        raise ValueError("Clip length must be positive")
+                except ValueError as e:
+                    messagebox.showerror("Invalid Input", f"Invalid clip length: {e}")
+                    return
+
+                # The checkpoints are in models/checkpoints/{run_id}/milestones/
+                checkpoint_base_dir = self.project_root / "models" / "checkpoints" / run_id / "milestones"
+
+                # Video output directory
+                video_output_dir = self.project_root / "outputs" / run_id / "milestones"
+
+                if not checkpoint_base_dir.exists():
+                    messagebox.showerror("Error",
+                                       f"Checkpoint directory not found: {checkpoint_base_dir}\n\n"
+                                       f"Make sure this training run has saved checkpoints.")
+                    return
+
+                # Create output directory if it doesn't exist
+                video_output_dir.mkdir(parents=True, exist_ok=True)
+
+                # Close dialog
+                dialog.destroy()
+
+                # Show progress
+                self._append_log(f"🎥 Generating videos for {run_name}...")
+                self._append_log(f"   Checkpoint directory: {checkpoint_base_dir}")
+                self._append_log(f"   Output directory: {video_output_dir}")
+                self._append_log(f"   Clip length: {clip_seconds} seconds")
+
+                # Import and call the video generator
+                from tools.retro_ml_desktop.process_manager import generate_post_training_videos
+
+                # Get config path from process (if tracked)
+                config_path = None
+                if selected_run['tracked']:
+                    config_path = self.process_manager._temp_configs.get(run_id)
+
+                if not config_path or not Path(config_path).exists():
+                    # Fallback to default config
+                    config_path = str(self.project_root / "conf" / "config.yaml")
+                    self._append_log(f"   Using default config: {config_path}")
+
+                # Generate videos in a separate thread to avoid blocking UI
+                def generate_thread():
+                    success = generate_post_training_videos(
+                        config_path=config_path,
+                        model_dir=str(checkpoint_base_dir),
+                        output_dir=str(video_output_dir),
+                        clip_seconds=clip_seconds,
+                        verbose=1
+                    )
+
+                    # Update UI on main thread
+                    self.root.after(0, lambda: self._on_video_generation_complete(success, run_name))
+
+                import threading
+                thread = threading.Thread(target=generate_thread, daemon=True)
+                thread.start()
+
+            generate_btn = ctk.CTkButton(buttons_frame, text="🎬 Generate Videos",
+                                        command=generate_videos,
+                                        fg_color="#28a745", hover_color="#218838")
+            generate_btn.pack(side="left", padx=5, pady=5)
+
+            cancel_btn = ctk.CTkButton(buttons_frame, text="❌ Cancel",
+                                      command=dialog.destroy)
+            cancel_btn.pack(side="right", padx=5, pady=5)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to show video generation dialog: {e}")
+            self._append_log(f"❌ Error showing video generation dialog: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _on_video_generation_complete(self, success: bool, run_name: str):
+        """Called when video generation completes."""
+        if success:
+            self._append_log(f"✅ Video generation complete for {run_name}!")
+            self._append_log(f"   Refreshing video gallery...")
+            self._refresh_videos()
+            messagebox.showinfo("Success", f"Videos generated successfully for {run_name}!\n\nCheck the Video Gallery.")
+        else:
+            self._append_log(f"❌ Video generation failed for {run_name}")
+            messagebox.showerror("Error", f"Failed to generate videos for {run_name}.\nCheck the logs for details.")
+
     def _show_start_training_dialog(self):
         """Show the start training dialog."""
         dialog = StartTrainingDialog(self.root, self.presets, self.games, self.algorithms, app=self)
