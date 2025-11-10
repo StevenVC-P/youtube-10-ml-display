@@ -127,7 +127,10 @@ class ProcessManager:
         return list(self.processes.values())
 
     def get_process_output_paths(self, process_id: str) -> Dict[str, str]:
-        """Get the output paths for a specific process."""
+        """Get the output paths for a specific process.
+
+        Returns absolute paths resolved relative to the project root.
+        """
         if process_id not in self.processes:
             return {}
 
@@ -138,17 +141,28 @@ class ProcessManager:
         config = process_info.config_data
         paths = config.get('paths', {})
 
-        # Extract base paths
-        videos_milestones = paths.get('videos_milestones', '')
+        # Helper function to resolve paths to absolute
+        def resolve_path(path_str: str) -> str:
+            if not path_str:
+                return ''
+            path = Path(path_str)
+            # If already absolute, return as-is; otherwise resolve relative to project root
+            if path.is_absolute():
+                return str(path)
+            else:
+                return str(self.project_root / path)
+
+        # Extract and resolve all paths to absolute paths
+        videos_milestones = resolve_path(paths.get('videos_milestones', ''))
         videos_base = str(Path(videos_milestones).parent) if videos_milestones else ''
 
         return {
             'videos_base': videos_base,
-            'videos_milestones': paths.get('videos_milestones', ''),
-            'videos_eval': paths.get('videos_eval', ''),
-            'videos_parts': paths.get('videos_parts', ''),
-            'models': paths.get('models', ''),
-            'logs_tb': paths.get('logs_tb', '')
+            'videos_milestones': videos_milestones,
+            'videos_eval': resolve_path(paths.get('videos_eval', '')),
+            'videos_parts': resolve_path(paths.get('videos_parts', '')),
+            'models': resolve_path(paths.get('models', '')),
+            'logs_tb': resolve_path(paths.get('logs_tb', ''))
         }
 
     def create_process(
@@ -929,4 +943,6 @@ def generate_post_training_videos(
     except Exception as e:
         if verbose >= 1:
             print(f"[PostVideo] Error generating videos: {e}")
+            import traceback
+            traceback.print_exc()
         return False
