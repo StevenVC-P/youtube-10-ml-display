@@ -22,6 +22,7 @@ from tools.retro_ml_desktop.monitor import SystemMonitor, SystemMetrics, get_gpu
 from tools.retro_ml_desktop.process_manager import ProcessManager, ProcessInfo, ResourceLimits, generate_run_id, get_available_cpus, get_available_gpus, get_detailed_cpu_info, get_detailed_gpu_info, get_recommended_resources
 from tools.retro_ml_desktop.resource_selector import ResourceSelectorDialog
 from tools.retro_ml_desktop.ram_cleaner import RAMCleanupDialog, get_memory_recommendations
+from tools.retro_ml_desktop.storage_cleaner import show_storage_cleanup_dialog
 from tools.retro_ml_desktop.video_player import VideoPlayerDialog, play_video_with_player, get_video_info
 from tools.retro_ml_desktop.ml_database import MetricsDatabase
 from tools.retro_ml_desktop.ml_collector import MetricsCollector
@@ -34,14 +35,24 @@ class RetroMLSimple:
     
     def __init__(self):
         # Configure logging to show in terminal
+        # Set root logger to WARNING to reduce noise
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.WARNING,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.StreamHandler(),  # This will output to terminal
                 logging.FileHandler('ml_dashboard.log')  # Also save to file
             ]
         )
+
+        # Set specific loggers to appropriate levels
+        # Only show warnings and errors from these modules
+        logging.getLogger('tools.retro_ml_desktop.ml_plotting').setLevel(logging.WARNING)
+        logging.getLogger('tools.retro_ml_desktop.ml_dashboard').setLevel(logging.WARNING)
+        logging.getLogger('tools.retro_ml_desktop.ml_collector').setLevel(logging.WARNING)
+
+        # Keep root logger at INFO for important messages
+        logging.getLogger('root').setLevel(logging.INFO)
 
         # Set appearance mode and color theme
         ctk.set_appearance_mode("dark")
@@ -201,6 +212,17 @@ class RetroMLSimple:
             height=30
         )
         ram_cleanup_btn.pack(pady=5, padx=10, fill="x")
+
+        # Storage cleanup button
+        storage_cleanup_btn = ctk.CTkButton(
+            sidebar, text="🗑️ Storage Cleanup",
+            command=self._show_storage_cleanup,
+            font=ctk.CTkFont(size=12),
+            height=30,
+            fg_color="#dc3545",
+            hover_color="#c82333"
+        )
+        storage_cleanup_btn.pack(pady=5, padx=10, fill="x")
 
         # Training controls info
         controls_frame = ctk.CTkFrame(sidebar)
@@ -660,11 +682,46 @@ class RetroMLSimple:
         # Refresh system monitor after cleanup
         self._update_system_status()
 
+    def _show_storage_cleanup(self):
+        """Show the storage cleanup dialog."""
+        show_storage_cleanup_dialog(self.root, self.project_root)
+
+        # Refresh video gallery after cleanup
+        self._refresh_videos()
+
     def _append_log(self, message: str):
         """Append a message to the log (uses Python logging system)."""
         # Use Python's logging system instead of UI widget
         # This allows logs to be captured in terminal and log file
-        logging.info(message)
+
+        # Replace emoji characters with ASCII equivalents for Windows console compatibility
+        emoji_replacements = {
+            '✅': '[OK]',
+            '❌': '[ERROR]',
+            '⚠️': '[WARNING]',
+            '🎬': '[VIDEO]',
+            '🎥': '[CAMERA]',
+            '📹': '[REC]',
+            '⏸️': '[PAUSE]',
+            '▶️': '[PLAY]',
+            '⏹️': '[STOP]',
+            '🔄': '[REFRESH]',
+            '🗑️': '[DELETE]',
+            '🧠': '[RAM]',
+            '💾': '[SAVE]',
+            '📊': '[STATS]',
+            '🎮': '[GAME]',
+            '🧪': '[TEST]',
+            '⚡': '[FAST]',
+            '🔧': '[CONFIG]',
+            '📦': '[PACKAGE]',
+        }
+
+        clean_message = message
+        for emoji, replacement in emoji_replacements.items():
+            clean_message = clean_message.replace(emoji, replacement)
+
+        logging.info(clean_message)
 
     def _refresh_progress(self):
         """Refresh the progress tracking display."""
@@ -1502,6 +1559,21 @@ class RetroMLSimple:
                 if checkpoint_dir.exists():
                     checkpoint_count = len(list(checkpoint_dir.glob("*.zip")))
 
+                # Read metadata to get target_hours
+                metadata_path = self.project_root / "models" / "checkpoints" / run_info['id'] / "run_metadata.json"
+                target_hours = None
+                if metadata_path.exists():
+                    try:
+                        import json
+                        with open(metadata_path, 'r') as f:
+                            metadata = json.load(f)
+                            target_hours = metadata.get('target_hours')
+                    except Exception:
+                        pass
+
+                # Store target_hours in run_info for later use
+                run_info['target_hours'] = target_hours
+
                 # Status icon
                 status = run_info['status']
                 if status == "completed":
@@ -1513,7 +1585,9 @@ class RetroMLSimple:
                 else:
                     status_icon = "⏸️"
 
-                display_text = f"{status_icon} {run_info['name']} - {run_info['id'][:8]}... ({checkpoint_count} checkpoints)"
+                # Add target hours to display if available
+                target_info = f" | Target: {target_hours}h" if target_hours else ""
+                display_text = f"{status_icon} {run_info['name']} - {run_info['id'][:8]}... ({checkpoint_count} checkpoints{target_info})"
                 runs_listbox.insert(tk.END, display_text)
                 run_data.append(run_info)
 
@@ -1521,13 +1595,53 @@ class RetroMLSimple:
             options_frame = ctk.CTkFrame(dialog)
             options_frame.pack(fill="x", padx=20, pady=10)
 
-            # Clip length option
-            clip_label = ctk.CTkLabel(options_frame, text="Video Clip Length (seconds):")
+            # Video length option
+            clip_label = ctk.CTkLabel(options_frame, text="Total Video Length (seconds):")
             clip_label.grid(row=0, column=0, padx=5, pady=5, sticky="w")
 
-            clip_var = tk.StringVar(value="90")
+            clip_var = tk.StringVar(value="600")  # Default 10 minutes
             clip_entry = ctk.CTkEntry(options_frame, textvariable=clip_var, width=100)
             clip_entry.grid(row=0, column=1, padx=5, pady=5)
+
+            # Info label for target video length
+            target_info_label = ctk.CTkLabel(options_frame,
+                                            text="Select a run to auto-fill its target video length",
+                                            font=ctk.CTkFont(size=10),
+                                            text_color="gray")
+            target_info_label.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+
+            def on_run_selected(event):
+                """Update video length when a run is selected."""
+                selection = runs_listbox.curselection()
+                if selection:
+                    selected_run = run_data[selection[0]]
+                    target_hours = selected_run.get('target_hours')
+                    if target_hours:
+                        # Calculate total video seconds from target hours
+                        total_seconds = int(target_hours * 3600)
+                        clip_var.set(str(total_seconds))
+
+                        # Format display
+                        if total_seconds >= 3600:
+                            hours = total_seconds / 3600
+                            display = f"{hours:.1f}h"
+                        elif total_seconds >= 60:
+                            minutes = total_seconds / 60
+                            display = f"{minutes:.1f}m"
+                        else:
+                            display = f"{total_seconds}s"
+
+                        target_info_label.configure(
+                            text=f"Target: {display} ({total_seconds}s) - will generate one continuous video",
+                            text_color="#28a745"
+                        )
+                    else:
+                        target_info_label.configure(
+                            text="No target video length saved for this run (using manual input)",
+                            text_color="gray"
+                        )
+
+            runs_listbox.bind('<<ListboxSelect>>', on_run_selected)
 
             # Buttons frame
             buttons_frame = ctk.CTkFrame(dialog)
@@ -1545,11 +1659,11 @@ class RetroMLSimple:
                 run_name = selected_run['name']
 
                 try:
-                    clip_seconds = int(clip_var.get())
-                    if clip_seconds <= 0:
-                        raise ValueError("Clip length must be positive")
+                    total_seconds = int(clip_var.get())
+                    if total_seconds <= 0:
+                        raise ValueError("Video length must be positive")
                 except ValueError as e:
-                    messagebox.showerror("Invalid Input", f"Invalid clip length: {e}")
+                    messagebox.showerror("Invalid Input", f"Invalid video length: {e}")
                     return
 
                 # The checkpoints are in models/checkpoints/{run_id}/milestones/
@@ -1570,11 +1684,21 @@ class RetroMLSimple:
                 # Close dialog
                 dialog.destroy()
 
+                # Format display
+                if total_seconds >= 3600:
+                    hours = total_seconds / 3600
+                    display = f"{hours:.1f}h"
+                elif total_seconds >= 60:
+                    minutes = total_seconds / 60
+                    display = f"{minutes:.1f}m"
+                else:
+                    display = f"{total_seconds}s"
+
                 # Show progress
-                self._append_log(f"🎥 Generating videos for {run_name}...")
+                self._append_log(f"🎥 Generating continuous video for {run_name}...")
                 self._append_log(f"   Checkpoint directory: {checkpoint_base_dir}")
                 self._append_log(f"   Output directory: {video_output_dir}")
-                self._append_log(f"   Clip length: {clip_seconds} seconds")
+                self._append_log(f"   Total video length: {display} ({total_seconds}s)")
 
                 # Import and call the video generator
                 from tools.retro_ml_desktop.process_manager import generate_post_training_videos
@@ -1591,16 +1715,24 @@ class RetroMLSimple:
 
                 # Generate videos in a separate thread to avoid blocking UI
                 def generate_thread():
-                    success = generate_post_training_videos(
-                        config_path=config_path,
-                        model_dir=str(checkpoint_base_dir),
-                        output_dir=str(video_output_dir),
-                        clip_seconds=clip_seconds,
-                        verbose=1
-                    )
+                    try:
+                        success = generate_post_training_videos(
+                            config_path=config_path,
+                            model_dir=str(checkpoint_base_dir),
+                            output_dir=str(video_output_dir),
+                            clip_seconds=90,  # Not used when total_seconds is provided
+                            total_seconds=total_seconds,
+                            verbose=2  # Increased verbosity for debugging
+                        )
 
-                    # Update UI on main thread
-                    self.root.after(0, lambda: self._on_video_generation_complete(success, run_name))
+                        # Update UI on main thread
+                        self.root.after(0, lambda: self._on_video_generation_complete(success, run_name))
+                    except Exception as e:
+                        error_msg = f"Exception during video generation: {e}"
+                        self._append_log(f"❌ {error_msg}")
+                        import traceback
+                        traceback.print_exc()
+                        self.root.after(0, lambda: self._on_video_generation_complete(False, run_name))
 
                 import threading
                 thread = threading.Thread(target=generate_thread, daemon=True)
@@ -1688,7 +1820,8 @@ class RetroMLSimple:
                 resources=resources,
                 extra_args=preset.get('extra_args', []),
                 custom_output_path=config.get('output_path'),
-                resume_from_checkpoint=config.get('resume_checkpoint')
+                resume_from_checkpoint=config.get('resume_checkpoint'),
+                target_hours=config.get('target_hours')
             )
 
             # Create experiment run in ML database

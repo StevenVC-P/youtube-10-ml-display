@@ -134,18 +134,18 @@ class PostTrainingVideoGenerator:
     def generate_all_videos(self) -> List[Path]:
         """Generate videos for all available checkpoints."""
         checkpoint_files = self.find_checkpoint_files()
-        
+
         if not checkpoint_files:
             print(f"[PostVideo] No checkpoint files found in {self.model_dir}")
             return []
-        
+
         generated_videos = []
-        
+
         print(f"[PostVideo] Generating videos for {len(checkpoint_files)} checkpoints...")
-        
+
         for milestone_pct in sorted(checkpoint_files.keys()):
             checkpoint_path = checkpoint_files[milestone_pct]
-            
+
             try:
                 video_path = self._generate_milestone_video(milestone_pct, checkpoint_path)
                 if video_path:
@@ -154,12 +154,86 @@ class PostTrainingVideoGenerator:
                         print(f"[PostVideo] [OK] Generated video for {milestone_pct}%: {video_path.name}")
                 else:
                     print(f"[PostVideo] [ERROR] Failed to generate video for {milestone_pct}%")
-                    
+
             except Exception as e:
                 print(f"[PostVideo] [ERROR] Error generating video for {milestone_pct}%: {e}")
-        
+
         print(f"[PostVideo] Video generation complete! Generated {len(generated_videos)} videos.")
         return generated_videos
+
+    def generate_continuous_video(self, total_seconds: int) -> Optional[Path]:
+        """
+        Generate a single continuous video showing progression through all checkpoints.
+
+        Args:
+            total_seconds: Total length of the video in seconds
+
+        Returns:
+            Path to the generated video, or None if generation failed
+        """
+        checkpoint_files = self.find_checkpoint_files()
+
+        if not checkpoint_files:
+            print(f"[PostVideo] No checkpoint files found in {self.model_dir}")
+            return None
+
+        sorted_milestones = sorted(checkpoint_files.keys())
+        num_checkpoints = len(sorted_milestones)
+
+        if num_checkpoints == 0:
+            print(f"[PostVideo] No checkpoints available")
+            return None
+
+        # Calculate seconds per checkpoint to match total_seconds
+        seconds_per_checkpoint = total_seconds / num_checkpoints
+
+        print(f"[PostVideo] Generating continuous video:")
+        print(f"  - Total duration: {total_seconds}s ({total_seconds/60:.1f} minutes)")
+        print(f"  - Checkpoints: {num_checkpoints}")
+        print(f"  - Seconds per checkpoint: {seconds_per_checkpoint:.1f}s")
+
+        # Generate video for each checkpoint
+        temp_videos = []
+        for milestone_pct in sorted_milestones:
+            checkpoint_path = checkpoint_files[milestone_pct]
+
+            try:
+                # Temporarily set clip_seconds for this checkpoint
+                original_clip_seconds = self.clip_seconds
+                self.clip_seconds = int(seconds_per_checkpoint)
+
+                video_path = self._generate_milestone_video(milestone_pct, checkpoint_path)
+
+                # Restore original clip_seconds
+                self.clip_seconds = original_clip_seconds
+
+                if video_path:
+                    temp_videos.append(video_path)
+                    if self.verbose >= 1:
+                        print(f"[PostVideo] [OK] Generated segment for {milestone_pct}%: {video_path.name}")
+                else:
+                    print(f"[PostVideo] [ERROR] Failed to generate segment for {milestone_pct}%")
+
+            except Exception as e:
+                print(f"[PostVideo] [ERROR] Error generating segment for {milestone_pct}%: {e}")
+
+        if not temp_videos:
+            print(f"[PostVideo] No video segments were generated")
+            return None
+
+        # Concatenate all videos into one
+        output_path = self.output_dir / f"training_progression_{total_seconds}s.mp4"
+
+        print(f"[PostVideo] Concatenating {len(temp_videos)} segments into continuous video...")
+
+        success = self._concatenate_videos(temp_videos, output_path)
+
+        if success:
+            print(f"[PostVideo] ✅ Continuous video generated: {output_path.name}")
+            return output_path
+        else:
+            print(f"[PostVideo] ❌ Failed to concatenate videos")
+            return None
     
     def _generate_milestone_video(self, milestone_pct: float, checkpoint_path: Path) -> Optional[Path]:
         """Generate a single milestone video from a checkpoint."""
@@ -309,6 +383,15 @@ class PostTrainingVideoGenerator:
 
                 # Convert to torch tensor
                 obs_tensor = torch.as_tensor(obs_tensor).float()
+
+                # Move tensor to the same device as the model
+                # Check if model is on CUDA
+                if hasattr(model.policy, 'device'):
+                    obs_tensor = obs_tensor.to(model.policy.device)
+                elif next(model.policy.parameters(), None) is not None:
+                    # Get device from model parameters
+                    device = next(model.policy.parameters()).device
+                    obs_tensor = obs_tensor.to(device)
 
                 # Get action probabilities and value estimate
                 with torch.no_grad():
@@ -509,10 +592,74 @@ class PostTrainingVideoGenerator:
                     cv2.putText(panel, name, (pos[0] + 15, pos[1] + 5),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.3, (180, 180, 180), 1)
 
+    def _concatenate_videos(self, video_paths: List[Path], output_path: Path) -> bool:
+        """
+        Concatenate multiple videos into a single continuous video using FFmpeg.
+
+        Args:
+            video_paths: List of video file paths to concatenate
+            output_path: Path for the output concatenated video
+
+        Returns:
+            True if concatenation succeeded, False otherwise
+        """
+        try:
+            import tempfile
+
+            # Create a temporary file list for FFmpeg concat demuxer
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                concat_file = f.name
+                for video_path in video_paths:
+                    # FFmpeg concat demuxer requires absolute paths
+                    abs_path = video_path.resolve()
+                    # Escape single quotes and write in FFmpeg concat format
+                    escaped_path = str(abs_path).replace("'", "'\\''")
+                    f.write(f"file '{escaped_path}'\n")
+
+            # Use FFmpeg to concatenate videos
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-f', 'concat',
+                '-safe', '0',
+                '-i', concat_file,
+                '-c', 'copy',  # Copy streams without re-encoding for speed
+                '-y',  # Overwrite output file
+                str(output_path)
+            ]
+
+            if self.verbose >= 2:
+                print(f"[PostVideo] Running FFmpeg: {' '.join(ffmpeg_cmd)}")
+
+            result = subprocess.run(
+                ffmpeg_cmd,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+
+            # Clean up temp file
+            try:
+                os.unlink(concat_file)
+            except:
+                pass
+
+            if result.returncode != 0:
+                print(f"[PostVideo] FFmpeg concatenation failed:")
+                print(f"  stderr: {result.stderr}")
+                return False
+
+            return output_path.exists()
+
+        except Exception as e:
+            print(f"[PostVideo] Error concatenating videos: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
 
 def main():
     """Main function for command-line usage."""
-    parser = argparse.ArgumentParser(description='Generate milestone videos after training')
+    parser = argparse.ArgumentParser(description='Generate videos after training')
     parser.add_argument('--model-dir', type=str, required=True,
                        help='Directory containing model checkpoints')
     parser.add_argument('--config', type=str, required=True,
@@ -520,18 +667,20 @@ def main():
     parser.add_argument('--output-dir', type=str, default='video/post_training',
                        help='Output directory for videos')
     parser.add_argument('--clip-seconds', type=int, default=10,
-                       help='Length of each video clip in seconds')
+                       help='Length of each video clip in seconds (for milestone mode)')
+    parser.add_argument('--total-seconds', type=int, default=None,
+                       help='Total video length in seconds (generates one continuous video)')
     parser.add_argument('--fps', type=int, default=30,
                        help='Frames per second for videos')
     parser.add_argument('--verbose', type=int, default=1,
                        help='Verbosity level (0-2)')
-    
+
     args = parser.parse_args()
-    
+
     # Load config
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
-    
+
     # Create video generator
     generator = PostTrainingVideoGenerator(
         config=config,
@@ -541,15 +690,25 @@ def main():
         fps=args.fps,
         verbose=args.verbose
     )
-    
+
     # Generate videos
-    generated_videos = generator.generate_all_videos()
-    
-    print(f"\n[VIDEO] Video generation complete!")
-    print(f"Generated {len(generated_videos)} videos in {args.output_dir}")
-    
-    for video_path in generated_videos:
-        print(f"  [VIDEO] {video_path.name}")
+    if args.total_seconds:
+        # Generate single continuous video
+        video_path = generator.generate_continuous_video(args.total_seconds)
+        if video_path:
+            print(f"\n[VIDEO] Continuous video generated!")
+            print(f"  [VIDEO] {video_path.name}")
+        else:
+            print(f"\n[VIDEO] Failed to generate continuous video")
+    else:
+        # Generate separate milestone videos
+        generated_videos = generator.generate_all_videos()
+
+        print(f"\n[VIDEO] Video generation complete!")
+        print(f"Generated {len(generated_videos)} videos in {args.output_dir}")
+
+        for video_path in generated_videos:
+            print(f"  [VIDEO] {video_path.name}")
 
 
 if __name__ == "__main__":

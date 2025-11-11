@@ -176,7 +176,8 @@ class ProcessManager:
         resources: Optional[ResourceLimits] = None,
         extra_args: Optional[List[str]] = None,
         custom_output_path: str = None,
-        resume_from_checkpoint: str = None
+        resume_from_checkpoint: str = None,
+        target_hours: float = None
     ) -> str:
         """
         Create and start a new training process.
@@ -192,6 +193,7 @@ class ProcessManager:
             extra_args: Extra command-line arguments
             custom_output_path: Custom output path for videos
             resume_from_checkpoint: Path to checkpoint to resume from (optional)
+            target_hours: Target video length in hours (optional)
 
         Returns:
             Process ID
@@ -226,6 +228,10 @@ class ProcessManager:
         # Videos can be generated post-training using PostTrainingVideoGenerator
         config_data['recording']['milestone_clip_seconds'] = 0   # 0 = skip video recording, save checkpoints
         config_data['recording']['eval_clip_seconds'] = 0       # 0 = skip eval videos too
+
+        # Save target video length for post-training video generation
+        if target_hours is not None:
+            config_data['render']['target_hours'] = target_hours
 
         # Update paths for this run (use custom output path if provided)
         if custom_output_path:
@@ -264,6 +270,21 @@ class ProcessManager:
 
         for dir_path in output_dirs:
             dir_path.mkdir(parents=True, exist_ok=True)
+
+        # Save run metadata to a JSON file in the checkpoint directory
+        metadata_path = self.project_root / "models" / "checkpoints" / run_id / "run_metadata.json"
+        metadata = {
+            'run_id': run_id,
+            'game': game,
+            'algorithm': algorithm,
+            'total_timesteps': total_timesteps,
+            'target_hours': target_hours,
+            'created': datetime.now().isoformat(),
+            'custom_output_path': custom_output_path
+        }
+        with open(metadata_path, 'w') as f:
+            import json
+            json.dump(metadata, f, indent=2)
 
         # Create temporary config file
         temp_config = tempfile.NamedTemporaryFile(
@@ -894,17 +915,19 @@ def generate_post_training_videos(
     model_dir: str,
     output_dir: str = "video/post_training",
     clip_seconds: int = 10,
-    verbose: int = 1
+    verbose: int = 1,
+    total_seconds: int = None
 ) -> bool:
     """
-    Generate milestone videos after training completes using saved checkpoints.
+    Generate videos after training completes using saved checkpoints.
 
     Args:
         config_path: Path to the training config file
         model_dir: Directory containing model checkpoints
         output_dir: Output directory for generated videos
-        clip_seconds: Length of each video clip in seconds
+        clip_seconds: Length of each video clip in seconds (used if total_seconds is None)
         verbose: Verbosity level
+        total_seconds: If provided, generates a single continuous video of this length
 
     Returns:
         True if video generation succeeded, False otherwise
@@ -931,14 +954,25 @@ def generate_post_training_videos(
         )
 
         # Generate videos
-        generated_videos = generator.generate_all_videos()
+        if total_seconds is not None:
+            # Generate single continuous video
+            video_path = generator.generate_continuous_video(total_seconds)
+            if video_path:
+                if verbose >= 1:
+                    print(f"[PostVideo] Generated continuous video: {video_path.name}")
+                return True
+            else:
+                return False
+        else:
+            # Generate separate milestone videos
+            generated_videos = generator.generate_all_videos()
 
-        if verbose >= 1:
-            print(f"[PostVideo] Generated {len(generated_videos)} videos")
-            for video_path in generated_videos:
-                print(f"[PostVideo] 📹 {video_path.name}")
+            if verbose >= 1:
+                print(f"[PostVideo] Generated {len(generated_videos)} videos")
+                for video_path in generated_videos:
+                    print(f"[PostVideo] 📹 {video_path.name}")
 
-        return len(generated_videos) > 0
+            return len(generated_videos) > 0
 
     except Exception as e:
         if verbose >= 1:

@@ -358,7 +358,7 @@ class MLDashboard:
     def _refresh_runs(self):
         """Refresh the experiment runs list."""
         try:
-            logging.info("Refreshing ML Dashboard runs display...")
+            logging.debug("Refreshing ML Dashboard runs display...")
 
             # Clear existing items
             for item in self.runs_tree.get_children():
@@ -370,13 +370,13 @@ class MLDashboard:
 
             # Get runs from database
             runs = self.database.get_experiment_runs(status=filter_status)
-            logging.info(f"Found {len(runs)} experiment runs in database")
+            logging.debug(f"Found {len(runs)} experiment runs in database")
 
             # Debug: Check if there are any metrics in the database at all
             if runs:
                 for run in runs:
                     metrics_count = len(self.database.get_training_metrics(run.run_id))
-                    logging.info(f"Run {run.run_id} has {metrics_count} total metrics in database")
+                    logging.debug(f"Run {run.run_id} has {metrics_count} total metrics in database")
 
             # Populate tree
             total_runs = len(runs)
@@ -390,18 +390,18 @@ class MLDashboard:
                 game = run.config.env_id.split('/')[-1] if run.config and run.config.env_id else "Unknown"
                 
                 # Get latest metrics for progress
-                logging.info(f"Getting latest metrics for run: {run.run_id}")
+                logging.debug(f"Getting latest metrics for run: {run.run_id}")
                 latest_metrics = self.database.get_latest_metrics(run.run_id)
-                logging.info(f"Latest metrics for {run.run_id}: {latest_metrics}")
+                logging.debug(f"Latest metrics for {run.run_id}: {latest_metrics}")
 
                 if latest_metrics:
                     progress = f"{latest_metrics.progress_pct:.1f}%"
                     reward = f"{latest_metrics.episode_reward_mean:.2f}" if latest_metrics.episode_reward_mean else "N/A"
-                    logging.info(f"Metrics found - Progress: {progress}, Reward: {reward}")
+                    logging.debug(f"Metrics found - Progress: {progress}, Reward: {reward}")
                 else:
                     progress = "0.0%"
                     reward = "N/A"
-                    logging.info(f"No metrics found for run {run.run_id}")
+                    logging.debug(f"No metrics found for run {run.run_id}")
                 
                 # Duration
                 duration = self._format_duration(run.duration)

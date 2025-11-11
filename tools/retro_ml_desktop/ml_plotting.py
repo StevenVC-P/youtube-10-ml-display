@@ -272,9 +272,9 @@ class MLPlotter:
         Args:
             run_ids: List of run IDs to plot
         """
-        self.logger.info(f"MLPlotter: Updating selected runs: {run_ids}")
+        self.logger.debug(f"MLPlotter: Updating selected runs: {run_ids}")
         self.selected_runs = set(run_ids)
-        self.logger.info(f"MLPlotter: Selected runs set to: {self.selected_runs}")
+        self.logger.debug(f"MLPlotter: Selected runs set to: {self.selected_runs}")
         self._update_plots()
     
     def set_metric(self, metric: str):
@@ -295,14 +295,14 @@ class MLPlotter:
     
     def _update_plots(self):
         """Update all plots with current data."""
-        self.logger.info(f"MLPlotter: _update_plots called with selected_runs: {self.selected_runs}")
+        self.logger.debug(f"MLPlotter: _update_plots called with selected_runs: {self.selected_runs}")
 
         if not self.selected_runs:
-            self.logger.info("MLPlotter: No selected runs, showing empty state")
+            self.logger.debug("MLPlotter: No selected runs, showing empty state")
             self._plot_empty_state()
             return
 
-        self.logger.info(f"MLPlotter: Plotting data for {len(self.selected_runs)} runs")
+        self.logger.debug(f"MLPlotter: Plotting data for {len(self.selected_runs)} runs")
         try:
             # Clear all axes
             for ax in self.axes.values():
@@ -470,22 +470,22 @@ class MLPlotter:
             run_id: Run ID to plot
             color: Color for this run's plots
         """
-        self.logger.info(f"MLPlotter: Plotting data for run {run_id}")
+        self.logger.debug(f"MLPlotter: Plotting data for run {run_id}")
 
         # Get run info
         runs = self.database.get_experiment_runs()
         run = next((r for r in runs if r.run_id == run_id), None)
 
         if not run:
-            self.logger.warning(f"MLPlotter: Run {run_id} not found in database")
+            self.logger.debug(f"MLPlotter: Run {run_id} not found in database")
             return
 
         # Get metrics
         metrics = self.database.get_training_metrics(run_id)
-        self.logger.info(f"MLPlotter: Retrieved {len(metrics) if metrics else 0} metrics for run {run_id}")
+        self.logger.debug(f"MLPlotter: Retrieved {len(metrics) if metrics else 0} metrics for run {run_id}")
 
         if not metrics:
-            self.logger.warning(f"MLPlotter: No metrics found for run {run_id}")
+            self.logger.debug(f"MLPlotter: No metrics found for run {run_id}")
             return
         
         # Extract data

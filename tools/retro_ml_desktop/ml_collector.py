@@ -121,7 +121,7 @@ class LogParser:
         """
         metrics_list = []
         lines = log_text.split('\n')
-        logging.info(f"Parsing {len(lines)} lines for {run_id}")
+        logging.debug(f"Parsing {len(lines)} lines for {run_id}")
 
         # Current metric being built
         current_metric = None
@@ -182,13 +182,13 @@ class LogParser:
                 match = pattern.search(line)
                 if match:
                     value = float(match.group(1))
-                    logging.info(f"Found {metric_name}={value} in line: {line[:100]}")
+                    logging.debug(f"Found {metric_name}={value} in line: {line[:100]}")
                 elif 'fps' in line and metric_name == 'fps':
-                    logging.info(f"FPS pattern failed to match line: {line}")
+                    logging.debug(f"FPS pattern failed to match line: {line}")
                 elif 'total_timesteps' in line and metric_name == 'total_timesteps':
-                    logging.info(f"Total timesteps pattern failed to match line: {line}")
+                    logging.debug(f"Total timesteps pattern failed to match line: {line}")
                 elif 'value_loss' in line and metric_name == 'value_loss':
-                    logging.info(f"Value loss pattern failed to match line: {line}")
+                    logging.debug(f"Value loss pattern failed to match line: {line}")
 
                 if match:
                     value = float(match.group(1))
@@ -243,7 +243,7 @@ class LogParser:
             metrics_list.append(current_metric)
 
             # Debug logging
-            logging.info(f"Parsed metric for {run_id}: timestep={current_metric.timestep}, "
+            logging.debug(f"Parsed metric for {run_id}: timestep={current_metric.timestep}, "
                         f"progress={current_metric.progress_pct:.2f}%, "
                         f"reward={current_metric.episode_reward_mean}, "
                         f"fps={current_metric.fps}")
@@ -430,8 +430,8 @@ class MetricsCollector:
             try:
                 # Get recent log content (log_source returns last 2000 chars)
                 current_logs = log_source()
-                print(f"[MetricsCollector] Collection loop for {run_id}: got {len(current_logs)} chars from log_source")
-                self.logger.info(f"Collection loop for {run_id}: got {len(current_logs)} chars from log_source")
+                # Reduced logging - only log at debug level
+                self.logger.debug(f"Collection loop for {run_id}: got {len(current_logs)} chars from log_source")
 
                 # Check if logs have changed by comparing hash
                 import hashlib
@@ -440,18 +440,12 @@ class MetricsCollector:
                 if current_hash != last_log_hash and current_logs:
                     last_log_hash = current_hash
 
-                    print(f"[MetricsCollector] New log content detected for {run_id}, processing {len(current_logs)} chars")
-                    self.logger.info(f"New log content detected for {run_id}, processing {len(current_logs)} chars")
-
-                    # Show preview of logs
-                    preview = current_logs[:200].replace('\n', '\\n')
-                    print(f"[MetricsCollector] Log preview: {preview}...")
-                    self.logger.info(f"Log preview: {preview}...")
+                    # Only log new content at debug level
+                    self.logger.debug(f"New log content detected for {run_id}, processing {len(current_logs)} chars")
 
                     # Parse metrics from logs
                     metrics_list = self.log_parser.parse_log_chunk(current_logs, run_id)
-                    print(f"[MetricsCollector] Parsed {len(metrics_list)} metrics from logs for {run_id}")
-                    self.logger.info(f"Parsed {len(metrics_list)} metrics from logs for {run_id}")
+                    self.logger.debug(f"Parsed {len(metrics_list)} metrics from logs for {run_id}")
                     
                     # Add system metrics to latest metric
                     if metrics_list:
@@ -463,10 +457,10 @@ class MetricsCollector:
                             setattr(latest_metric, key, value)
 
                         # Store metrics in database
-                        print(f"[MetricsCollector] Storing {len(metrics_list)} metrics in database for {run_id}")
+                        self.logger.debug(f"Storing {len(metrics_list)} metrics in database for {run_id}")
                         for metric in metrics_list:
                             self.database.add_training_metrics(metric)
-                            print(f"[MetricsCollector] Saved metric: timestep={metric.timestep}, reward={metric.episode_reward_mean}, fps={metric.fps}")
+                            self.logger.debug(f"Saved metric: timestep={metric.timestep}, reward={metric.episode_reward_mean}, fps={metric.fps}")
 
                         # Update experiment run with latest progress and best reward
                         if metrics_list:
