@@ -207,7 +207,7 @@ class HourVideoCallback(BaseCallback):
             print(f"[HourVideo] Error finishing video: {e}")
 
     def _extract_ml_analytics(self) -> Dict[str, Any]:
-        """Extract ML analytics from the current model state."""
+        """Extract ML analytics from the current model state, including real layer activations."""
         analytics = {
             'step': self.num_timesteps,
             'hour': self.current_hour,
@@ -216,9 +216,10 @@ class HourVideoCallback(BaseCallback):
             'action_probs': None,
             'value_estimate': 0.0,
             'learning_rate': 0.00025,
-            'episode_reward': 0.0
+            'episode_reward': 0.0,
+            'layer_activations': {}  # Store real layer activations
         }
-        
+
         try:
             if hasattr(self.model, 'policy') and hasattr(self.model.policy, 'predict'):
                 # Get current observation from environment
@@ -228,23 +229,64 @@ class HourVideoCallback(BaseCallback):
                     if obs is not None and len(obs) > 0:
                         # Use first environment's observation
                         single_obs = obs[0:1]  # Shape: (1, ...)
-                        
+
+                        # Extract layer activations using forward hooks
+                        import torch
+                        activations = {}
+                        hooks = []
+
+                        def get_activation(name):
+                            def hook(module, input, output):
+                                # Store mean activation across spatial dimensions
+                                if isinstance(output, torch.Tensor):
+                                    # For conv layers: average across spatial dimensions
+                                    if len(output.shape) == 4:  # (batch, channels, height, width)
+                                        activations[name] = output[0].mean(dim=(1, 2)).cpu().numpy()
+                                    # For linear layers: just use the values
+                                    elif len(output.shape) == 2:  # (batch, features)
+                                        activations[name] = output[0].cpu().numpy()
+                            return hook
+
+                        # Register hooks for feature extractor layers
+                        if hasattr(self.model.policy, 'features_extractor'):
+                            features = self.model.policy.features_extractor
+                            if hasattr(features, 'cnn'):
+                                # For NatureCNN architecture
+                                cnn = features.cnn
+                                if len(cnn) > 0:
+                                    hooks.append(cnn[0].register_forward_hook(get_activation('conv1')))
+                                if len(cnn) > 2:
+                                    hooks.append(cnn[2].register_forward_hook(get_activation('conv2')))
+                                if len(cnn) > 4:
+                                    hooks.append(cnn[4].register_forward_hook(get_activation('conv3')))
+
+                            # Hook for the linear layer after CNN
+                            if hasattr(features, 'linear'):
+                                hooks.append(features.linear.register_forward_hook(get_activation('dense')))
+
                         # Get action probabilities and value estimate
                         with self.model.policy.set_training_mode(False):
                             actions, values, log_probs = self.model.policy(single_obs)
-                            
+
                             if hasattr(self.model.policy, 'action_dist'):
                                 action_dist = self.model.policy.action_dist
                                 if hasattr(action_dist, 'probs'):
                                     analytics['action_probs'] = action_dist.probs[0].detach().cpu().numpy()
-                            
+
                             if values is not None:
                                 analytics['value_estimate'] = float(values[0].detach().cpu().numpy())
-                                
+
+                        # Remove hooks
+                        for hook in hooks:
+                            hook.remove()
+
+                        # Store activations in analytics
+                        analytics['layer_activations'] = activations
+
         except Exception as e:
             if self.verbose >= 2:
                 print(f"[HourVideo] Analytics extraction error: {e}")
-        
+
         return analytics
 
     def _create_enhanced_frame(self, game_frame: np.ndarray, analytics: Dict[str, Any]) -> np.ndarray:
@@ -321,19 +363,22 @@ class HourVideoCallback(BaseCallback):
         cv2.putText(panel, f"Value Est:  {value:.3f}", (10, int(y_pos)), mono_font, 0.4, green, 1)
 
     def _draw_neural_network(self, panel: np.ndarray, analytics: Dict[str, Any]) -> None:
-        """Draw neural network visualization with realistic architecture."""
+        """Draw neural network visualization with REAL layer activations from the model."""
         # Network area
         net_x, net_y = 20, 280
         net_width, net_height = 440, 240
 
         # Layer configuration (realistic CNN for Atari)
         layers = [
-            {'name': 'Input', 'shape': '84×84×4', 'nodes': 8, 'color': (0, 255, 0)},      # Green
-            {'name': 'Conv1', 'shape': '32@20×20', 'nodes': 6, 'color': (255, 100, 0)},   # Blue
-            {'name': 'Conv2', 'shape': '64@9×9', 'nodes': 6, 'color': (255, 100, 0)},     # Blue
-            {'name': 'Dense', 'shape': '512', 'nodes': 8, 'color': (100, 100, 255)},      # Light blue
-            {'name': 'Output', 'shape': '4', 'nodes': 4, 'color': (0, 165, 255)}          # Orange
+            {'name': 'Input', 'shape': '84×84×4', 'nodes': 8, 'color': (0, 255, 0), 'key': None},      # Green
+            {'name': 'Conv1', 'shape': '32@20×20', 'nodes': 6, 'color': (255, 100, 0), 'key': 'conv1'},   # Blue
+            {'name': 'Conv2', 'shape': '64@9×9', 'nodes': 6, 'color': (255, 100, 0), 'key': 'conv2'},     # Blue
+            {'name': 'Dense', 'shape': '512', 'nodes': 8, 'color': (100, 100, 255), 'key': 'dense'},      # Light blue
+            {'name': 'Output', 'shape': '4', 'nodes': 4, 'color': (0, 165, 255), 'key': 'output'}          # Orange
         ]
+
+        # Get real layer activations
+        layer_activations = analytics.get('layer_activations', {})
 
         # Calculate positions
         layer_spacing = net_width // (len(layers) - 1)
@@ -351,39 +396,72 @@ class HourVideoCallback(BaseCallback):
 
             layer_positions.append(positions)
 
-        # Draw connections with animation
+        # Get node activations for each layer
         step = analytics.get('step', 0)
+        layer_node_activations = []
+
+        for layer_idx, layer in enumerate(layers):
+            layer_key = layer.get('key')
+            num_nodes = layer['nodes']
+
+            if layer_idx == 0:  # Input layer - use constant moderate activation
+                activations = [0.5] * num_nodes
+            elif layer_idx == len(layers) - 1:  # Output layer - use action probabilities
+                action_probs = analytics.get('action_probs', [0.25, 0.25, 0.25, 0.25])
+                activations = [action_probs[i] if i < len(action_probs) else 0.25 for i in range(num_nodes)]
+            elif layer_key and layer_key in layer_activations:
+                # Use REAL activations from the network
+                real_activations = layer_activations[layer_key]
+                # Normalize to 0-1 range and sample nodes
+                if len(real_activations) > 0:
+                    # Take absolute value and normalize
+                    abs_activations = np.abs(real_activations)
+                    max_val = abs_activations.max() if abs_activations.max() > 0 else 1.0
+                    normalized = abs_activations / max_val
+
+                    # Sample evenly across the activation array to get values for our display nodes
+                    indices = np.linspace(0, len(normalized) - 1, num_nodes, dtype=int)
+                    activations = [float(normalized[i]) for i in indices]
+                else:
+                    activations = [0.5] * num_nodes
+            else:
+                # Fallback to moderate activation if no real data available
+                activations = [0.5] * num_nodes
+
+            layer_node_activations.append(activations)
+
+        # Draw connections based on real activations
         for i in range(len(layer_positions) - 1):
             current_layer = layer_positions[i]
             next_layer = layer_positions[i + 1]
+            current_activations = layer_node_activations[i]
+            next_activations = layer_node_activations[i + 1]
 
             for j, start_pos in enumerate(current_layer):
                 for k, end_pos in enumerate(next_layer):
-                    # Simulate connection strength with some animation
-                    strength = 0.3 + 0.4 * np.sin(step * 0.01 + j * 0.5 + k * 0.3)
+                    # Connection strength based on REAL activations of connected nodes
+                    current_act = current_activations[j] if j < len(current_activations) else 0.5
+                    next_act = next_activations[k] if k < len(next_activations) else 0.5
+                    strength = (current_act + next_act) / 2.0
 
-                    if strength > 0.6:  # Only draw strong connections
-                        alpha = int(strength * 255)
+                    if strength > 0.3:  # Only draw connections with sufficient activation
+                        alpha = int(strength * 200)
                         color = (alpha // 3, alpha // 3, alpha)
-                        thickness = 1 if strength > 0.7 else 1
+                        thickness = 1 if strength > 0.6 else 1
                         cv2.line(panel, start_pos, end_pos, color, thickness)
 
-        # Draw nodes
+        # Draw nodes with REAL activations
         action_names = ['NOOP', 'FIRE', 'RIGHT', 'LEFT']
         action_probs = analytics.get('action_probs', [0.25, 0.25, 0.25, 0.25])
 
         for layer_idx, (layer, positions) in enumerate(zip(layers, layer_positions)):
-            for node_idx, pos in enumerate(positions):
-                # Node activation (simulated)
-                if layer_idx == len(layers) - 1:  # Output layer
-                    if node_idx < len(action_probs):
-                        activation = action_probs[node_idx]
-                    else:
-                        activation = 0.25
-                else:
-                    activation = 0.3 + 0.4 * np.sin(step * 0.02 + layer_idx * 0.8 + node_idx * 0.4)
+            activations = layer_node_activations[layer_idx]
 
-                # Node color based on activation
+            for node_idx, pos in enumerate(positions):
+                # Get REAL activation for this node
+                activation = activations[node_idx] if node_idx < len(activations) else 0.5
+
+                # Node color based on REAL activation
                 base_color = layer['color']
                 brightness = int(activation * 255)
                 node_color = tuple(int(c * brightness / 255) for c in base_color)
