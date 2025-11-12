@@ -36,7 +36,7 @@ class PostTrainingVideoGenerator:
     """
     Generates milestone videos after training completes using saved model checkpoints.
     """
-    
+
     def __init__(
         self,
         config: Dict[str, Any],
@@ -45,7 +45,9 @@ class PostTrainingVideoGenerator:
         milestones_pct: List[float] = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         clip_seconds: int = 90,
         fps: int = 30,
-        verbose: int = 1
+        verbose: int = 1,
+        db=None,
+        run_id: str = None
     ):
         self.config = config
         self.model_dir = Path(model_dir)
@@ -54,16 +56,20 @@ class PostTrainingVideoGenerator:
         self.clip_seconds = clip_seconds
         self.fps = fps
         self.verbose = verbose
-        
+        self.db = db  # MetricsDatabase instance for progress tracking
+        self.run_id = run_id  # Training run ID for database tracking
+
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         if self.verbose >= 1:
             print(f"[PostVideo] Post-Training Video Generator initialized:")
             print(f"  - Model directory: {self.model_dir}")
             print(f"  - Output directory: {self.output_dir}")
             print(f"  - Milestones: {self.milestones_pct}")
             print(f"  - Clip duration: {clip_seconds}s @ {fps} FPS")
+            if self.db and self.run_id:
+                print(f"  - Progress tracking enabled for run: {self.run_id}")
     
     def find_checkpoint_files(self) -> Dict[float, Path]:
         """Find all available checkpoint files and map them to milestone percentages."""
@@ -133,6 +139,8 @@ class PostTrainingVideoGenerator:
     
     def generate_all_videos(self) -> List[Path]:
         """Generate videos for all available checkpoints."""
+        import uuid
+
         checkpoint_files = self.find_checkpoint_files()
 
         if not checkpoint_files:
@@ -147,7 +155,10 @@ class PostTrainingVideoGenerator:
             checkpoint_path = checkpoint_files[milestone_pct]
 
             try:
-                video_path = self._generate_milestone_video(milestone_pct, checkpoint_path)
+                # Generate unique video ID for progress tracking
+                video_id = f"{self.run_id}_pct_{milestone_pct:.0f}_{uuid.uuid4().hex[:8]}" if self.run_id else None
+
+                video_path = self._generate_milestone_video(milestone_pct, checkpoint_path, video_id=video_id)
                 if video_path:
                     generated_videos.append(video_path)
                     if self.verbose >= 1:
@@ -171,6 +182,8 @@ class PostTrainingVideoGenerator:
         Returns:
             Path to the generated video, or None if generation failed
         """
+        import uuid
+
         checkpoint_files = self.find_checkpoint_files()
 
         if not checkpoint_files:
@@ -202,7 +215,10 @@ class PostTrainingVideoGenerator:
                 original_clip_seconds = self.clip_seconds
                 self.clip_seconds = int(seconds_per_checkpoint)
 
-                video_path = self._generate_milestone_video(milestone_pct, checkpoint_path)
+                # Generate unique video ID for progress tracking
+                video_id = f"{self.run_id}_continuous_pct_{milestone_pct:.0f}_{uuid.uuid4().hex[:8]}" if self.run_id else None
+
+                video_path = self._generate_milestone_video(milestone_pct, checkpoint_path, video_id=video_id)
 
                 # Restore original clip_seconds
                 self.clip_seconds = original_clip_seconds
@@ -264,7 +280,7 @@ class PostTrainingVideoGenerator:
             # Don't clean up temp videos if concatenation failed (for debugging)
             return None
     
-    def _generate_milestone_video(self, milestone_pct: float, checkpoint_path: Path) -> Optional[Path]:
+    def _generate_milestone_video(self, milestone_pct: float, checkpoint_path: Path, video_id: str = None) -> Optional[Path]:
         """Generate a single milestone video from a checkpoint."""
         try:
             # Create video filename
@@ -274,9 +290,22 @@ class PostTrainingVideoGenerator:
             if self.verbose >= 1:
                 print(f"[PostVideo] Generating video: {video_filename}")
 
+            # Create database entry for progress tracking
+            if self.db and self.run_id and video_id:
+                target_frames = self.clip_seconds * self.fps
+                self.db.create_video_generation(
+                    video_id=video_id,
+                    run_id=self.run_id,
+                    video_name=video_filename,
+                    video_path=str(video_path),
+                    total_frames=target_frames
+                )
+
             # Load model from checkpoint
             model = self._load_model(checkpoint_path)
             if model is None:
+                if self.db and video_id:
+                    self.db.complete_video_generation(video_id, success=False, error_message="Failed to load model")
                 return None
 
             # Create evaluation environment with proper wrappers and rgb_array render mode
@@ -287,10 +316,17 @@ class PostTrainingVideoGenerator:
             )
 
             # Record gameplay frames DIRECTLY to video (streaming mode)
-            success = self._record_gameplay_to_video(model, env, video_path)
+            success = self._record_gameplay_to_video(model, env, video_path, video_id=video_id)
 
             # Cleanup
             env.close()
+
+            # Update database with completion status
+            if self.db and video_id:
+                if success:
+                    self.db.complete_video_generation(video_id, video_path=str(video_path), success=True)
+                else:
+                    self.db.complete_video_generation(video_id, success=False, error_message="Video recording failed")
 
             return video_path if success else None
 
@@ -298,6 +334,11 @@ class PostTrainingVideoGenerator:
             print(f"[PostVideo] Error in _generate_milestone_video: {e}")
             import traceback
             traceback.print_exc()
+
+            # Mark as failed in database
+            if self.db and video_id:
+                self.db.complete_video_generation(video_id, success=False, error_message=str(e))
+
             return None
     
     def _load_model(self, model_path: Path):
@@ -317,7 +358,7 @@ class PostTrainingVideoGenerator:
             print(f"[PostVideo] Failed to load model from {model_path}: {e}")
             return None
     
-    def _record_gameplay_to_video(self, model, env, output_path: Path) -> bool:
+    def _record_gameplay_to_video(self, model, env, output_path: Path, video_id: str = None) -> bool:
         """
         Record gameplay frames directly to video file (streaming mode).
         This avoids storing all frames in memory, which is critical for long videos.
@@ -339,6 +380,10 @@ class PostTrainingVideoGenerator:
 
             # Add small exploration to prevent stuck patterns
             exploration_rate = 0.05  # 5% random actions
+
+            # Track time for ETA calculation
+            start_time = time.time()
+            last_update_time = start_time
 
             for frame_idx in range(target_frames):
                 # Get frame from environment
@@ -366,6 +411,28 @@ class PostTrainingVideoGenerator:
                     # Write frame directly to video file
                     video_writer.write(enhanced_frame)
                     frames_written += 1
+
+                    # Update progress in database every 5 seconds
+                    current_time = time.time()
+                    if self.db and video_id and (current_time - last_update_time >= 5.0 or frame_idx == target_frames - 1):
+                        progress_pct = (frames_written / target_frames) * 100.0
+
+                        # Calculate ETA based on processing rate
+                        elapsed_time = current_time - start_time
+                        if frames_written > 0:
+                            frames_per_second = frames_written / elapsed_time
+                            remaining_frames = target_frames - frames_written
+                            eta_seconds = int(remaining_frames / frames_per_second) if frames_per_second > 0 else 0
+                        else:
+                            eta_seconds = 0
+
+                        self.db.update_video_generation_progress(
+                            video_id=video_id,
+                            processed_frames=frames_written,
+                            progress_percentage=progress_pct,
+                            estimated_seconds_remaining=eta_seconds
+                        )
+                        last_update_time = current_time
 
                     # Progress indicator every 10 seconds
                     if self.verbose >= 1 and frame_idx % (self.fps * 10) == 0 and frame_idx > 0:

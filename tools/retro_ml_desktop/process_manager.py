@@ -995,7 +995,9 @@ def generate_post_training_videos(
     output_dir: str = "video/post_training",
     clip_seconds: int = 10,
     verbose: int = 1,
-    total_seconds: int = None
+    total_seconds: int = None,
+    db=None,
+    run_id: str = None
 ) -> bool:
     """
     Generate videos after training completes using saved checkpoints.
@@ -1007,6 +1009,8 @@ def generate_post_training_videos(
         clip_seconds: Length of each video clip in seconds (used if total_seconds is None)
         verbose: Verbosity level
         total_seconds: If provided, generates a single continuous video of this length
+        db: MetricsDatabase instance for progress tracking (optional)
+        run_id: Training run ID for database tracking (optional)
 
     Returns:
         True if video generation succeeded, False otherwise
@@ -1029,7 +1033,9 @@ def generate_post_training_videos(
             output_dir=Path(output_dir),
             clip_seconds=clip_seconds,
             fps=30,
-            verbose=verbose
+            verbose=verbose,
+            db=db,
+            run_id=run_id
         )
 
         # Generate videos

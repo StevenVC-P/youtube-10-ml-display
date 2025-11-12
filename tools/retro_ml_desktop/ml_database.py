@@ -9,7 +9,7 @@ Designed for high-performance metric ingestion and analysis.
 import json
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import logging
@@ -134,12 +134,35 @@ class MetricsDatabase:
                 )
             """)
             
+            # Video generation progress table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS video_generation_progress (
+                    video_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    video_name TEXT NOT NULL,
+                    video_path TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    progress_percentage REAL DEFAULT 0.0,
+                    estimated_seconds_remaining INTEGER,
+                    total_frames INTEGER,
+                    processed_frames INTEGER DEFAULT 0,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    error_message TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (run_id) REFERENCES experiment_runs (run_id)
+                )
+            """)
+
             # Create indexes for performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_timestep ON training_metrics(run_id, timestep)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON training_metrics(timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON experiment_runs(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_start_time ON experiment_runs(start_time)")
-            
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_video_progress_status ON video_generation_progress(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_video_progress_run_id ON video_generation_progress(run_id)")
+
             conn.commit()
     
     def create_experiment_run(self, run: ExperimentRun) -> bool:
@@ -795,3 +818,148 @@ class MetricsDatabase:
         """Close database connections."""
         if hasattr(self._local, 'connection'):
             self._local.connection.close()
+
+    # Video Generation Progress Methods
+
+    def create_video_generation(self, video_id: str, run_id: str, video_name: str,
+                                video_path: str = None, total_frames: int = None) -> bool:
+        """Create a new video generation progress entry."""
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                now = datetime.now().isoformat()
+                conn.execute("""
+                    INSERT INTO video_generation_progress
+                    (video_id, run_id, video_name, video_path, status, started_at, total_frames, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'in-progress', ?, ?, ?, ?)
+                """, (video_id, run_id, video_name, video_path, now, total_frames, now, now))
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Error creating video generation entry: {e}")
+            return False
+
+    def update_video_generation_progress(self, video_id: str, processed_frames: int = None,
+                                        progress_percentage: float = None,
+                                        estimated_seconds_remaining: int = None) -> bool:
+        """Update video generation progress."""
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                updates = []
+                params = []
+
+                if processed_frames is not None:
+                    updates.append("processed_frames = ?")
+                    params.append(processed_frames)
+
+                if progress_percentage is not None:
+                    updates.append("progress_percentage = ?")
+                    params.append(progress_percentage)
+
+                if estimated_seconds_remaining is not None:
+                    updates.append("estimated_seconds_remaining = ?")
+                    params.append(estimated_seconds_remaining)
+
+                if updates:
+                    updates.append("updated_at = ?")
+                    params.append(datetime.now().isoformat())
+                    params.append(video_id)
+
+                    query = f"UPDATE video_generation_progress SET {', '.join(updates)} WHERE video_id = ?"
+                    conn.execute(query, params)
+                    conn.commit()
+                    return True
+                return False
+        except Exception as e:
+            print(f"Error updating video generation progress: {e}")
+            return False
+
+    def complete_video_generation(self, video_id: str, video_path: str = None,
+                                  success: bool = True, error_message: str = None) -> bool:
+        """Mark video generation as completed or failed."""
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                now = datetime.now().isoformat()
+                status = 'completed' if success else 'failed'
+
+                updates = ["status = ?", "completed_at = ?", "updated_at = ?"]
+                params = [status, now, now]
+
+                if video_path:
+                    updates.append("video_path = ?")
+                    params.append(video_path)
+
+                if error_message:
+                    updates.append("error_message = ?")
+                    params.append(error_message)
+
+                if success:
+                    updates.append("progress_percentage = ?")
+                    params.append(100.0)
+
+                params.append(video_id)
+
+                query = f"UPDATE video_generation_progress SET {', '.join(updates)} WHERE video_id = ?"
+                conn.execute(query, params)
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Error completing video generation: {e}")
+            return False
+
+    def get_video_generation_progress(self, video_id: str = None, run_id: str = None,
+                                     status: str = None) -> List[Dict[str, Any]]:
+        """Get video generation progress entries."""
+        try:
+            with self._lock:
+                conn = self._get_connection()
+
+                query = "SELECT * FROM video_generation_progress WHERE 1=1"
+                params = []
+
+                if video_id:
+                    query += " AND video_id = ?"
+                    params.append(video_id)
+
+                if run_id:
+                    query += " AND run_id = ?"
+                    params.append(run_id)
+
+                if status:
+                    query += " AND status = ?"
+                    params.append(status)
+
+                query += " ORDER BY created_at DESC"
+
+                cursor = conn.execute(query, params)
+                columns = [desc[0] for desc in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting video generation progress: {e}")
+            return []
+
+    def get_in_progress_videos(self) -> List[Dict[str, Any]]:
+        """Get all videos currently being generated."""
+        return self.get_video_generation_progress(status='in-progress')
+
+    def cleanup_old_video_progress(self, days: int = 7) -> int:
+        """Clean up old completed/failed video generation entries."""
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
+
+                cursor = conn.execute("""
+                    DELETE FROM video_generation_progress
+                    WHERE status IN ('completed', 'failed')
+                    AND completed_at < ?
+                """, (cutoff_date,))
+
+                deleted_count = cursor.rowcount
+                conn.commit()
+                return deleted_count
+        except Exception as e:
+            print(f"Error cleaning up old video progress: {e}")
+            return 0

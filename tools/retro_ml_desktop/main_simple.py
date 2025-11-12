@@ -422,6 +422,10 @@ class RetroMLSimple:
         # Auto-refresh videos when tab is opened
         self._refresh_videos()
 
+        # Start auto-refresh timer for in-progress videos
+        self._video_refresh_timer = None
+        self._schedule_video_refresh()
+
     def _update_dashboard(self, metrics: SystemMetrics):
         """Update sidebar with new metrics."""
         def update_ui():
@@ -1059,6 +1063,15 @@ class RetroMLSimple:
 
         # Add videos to tree
         for video in filtered_videos:
+            # Check if this is an in-progress video
+            is_in_progress = video.get('in_progress', False)
+
+            # Use different tags for in-progress videos
+            if is_in_progress:
+                item_tags = (video['path'], 'in_progress')
+            else:
+                item_tags = (video['path'],)
+
             self.video_tree.insert("", "end", values=(
                 video['name'],
                 video['type'],
@@ -1066,7 +1079,49 @@ class RetroMLSimple:
                 video['size'],
                 video['created'],
                 video['training_run']
-            ), tags=(video['path'],))
+            ), tags=item_tags)
+
+        # Configure tag styling for in-progress videos (grayed out)
+        self.video_tree.tag_configure('in_progress', foreground='gray')
+
+    def _schedule_video_refresh(self):
+        """Schedule periodic refresh of video gallery when videos are being generated."""
+        # Cancel existing timer if any
+        if hasattr(self, '_video_refresh_timer') and self._video_refresh_timer:
+            try:
+                self.root.after_cancel(self._video_refresh_timer)
+            except:
+                pass
+
+        # Check if there are any in-progress videos
+        try:
+            import sqlite3
+            conn = sqlite3.connect('ml_experiments.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM video_generation_progress WHERE status = 'in-progress'")
+            in_progress_count = cursor.fetchone()[0]
+            conn.close()
+
+            # If there are in-progress videos, refresh every 5 seconds
+            if in_progress_count > 0:
+                self._video_refresh_timer = self.root.after(5000, self._auto_refresh_videos)
+            else:
+                # Otherwise, check again in 30 seconds
+                self._video_refresh_timer = self.root.after(30000, self._schedule_video_refresh)
+        except Exception as e:
+            print(f"Error checking for in-progress videos: {e}")
+            # Try again in 30 seconds
+            self._video_refresh_timer = self.root.after(30000, self._schedule_video_refresh)
+
+    def _auto_refresh_videos(self):
+        """Auto-refresh videos and reschedule."""
+        try:
+            self._refresh_videos()
+        except Exception as e:
+            print(f"Error auto-refreshing videos: {e}")
+
+        # Schedule next refresh
+        self._schedule_video_refresh()
 
     def _discover_videos(self):
         """Discover all video files from training runs."""
@@ -1108,6 +1163,13 @@ class RetroMLSimple:
                 if db_videos:
                     self._append_log(f"  ✅ Found {len(db_videos)} video(s) from database")
                 videos.extend(db_videos)
+
+            # NEW: Check for in-progress video generation
+            self._append_log(f"🔍 Checking for in-progress video generation...")
+            in_progress_videos = self._scan_in_progress_videos()
+            if in_progress_videos:
+                self._append_log(f"  ⏳ Found {len(in_progress_videos)} video(s) being generated")
+            videos.extend(in_progress_videos)
 
             self._append_log(f"✅ Video discovery complete: Found {len(videos)} total video(s)")
 
@@ -1174,6 +1236,84 @@ class RetroMLSimple:
 
         except Exception as e:
             print(f"Error scanning database videos: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return videos
+
+    def _scan_in_progress_videos(self):
+        """Scan for videos currently being generated from the database."""
+        videos = []
+
+        try:
+            import sqlite3
+            conn = sqlite3.connect('ml_experiments.db')
+            cursor = conn.cursor()
+
+            # Get all in-progress video generation entries
+            cursor.execute("""
+                SELECT video_id, run_id, video_name, video_path,
+                       progress_percentage, estimated_seconds_remaining,
+                       processed_frames, total_frames, started_at
+                FROM video_generation_progress
+                WHERE status = 'in-progress'
+                ORDER BY started_at DESC
+            """)
+            rows = cursor.fetchall()
+
+            for row in rows:
+                video_id, run_id, video_name, video_path, progress_pct, eta_seconds, processed_frames, total_frames, started_at = row
+
+                # Format progress information
+                progress_str = f"{progress_pct:.1f}%" if progress_pct else "0%"
+
+                # Format ETA
+                if eta_seconds and eta_seconds > 0:
+                    if eta_seconds < 60:
+                        eta_str = f"{eta_seconds}s remaining"
+                    elif eta_seconds < 3600:
+                        eta_str = f"{eta_seconds // 60}m {eta_seconds % 60}s remaining"
+                    else:
+                        hours = eta_seconds // 3600
+                        minutes = (eta_seconds % 3600) // 60
+                        eta_str = f"{hours}h {minutes}m remaining"
+                else:
+                    eta_str = "Calculating..."
+
+                # Format duration as progress indicator
+                if total_frames and processed_frames:
+                    duration_str = f"{progress_str} ({processed_frames}/{total_frames} frames)"
+                else:
+                    duration_str = progress_str
+
+                # Format size as ETA
+                size_str = eta_str
+
+                # Format created time
+                try:
+                    from datetime import datetime
+                    created_dt = datetime.fromisoformat(started_at)
+                    created_str = created_dt.strftime("%Y-%m-%d %H:%M")
+                except:
+                    created_str = "In Progress"
+
+                videos.append({
+                    'name': f"🎬 {video_name}",  # Add emoji to indicate in-progress
+                    'path': video_path if video_path else f"generating_{video_id}",
+                    'type': "⏳ Generating",
+                    'duration': duration_str,
+                    'size': size_str,
+                    'created': created_str,
+                    'training_run': run_id,
+                    'in_progress': True,  # Flag to disable interaction
+                    'progress_pct': progress_pct,
+                    'video_id': video_id
+                })
+
+            conn.close()
+
+        except Exception as e:
+            print(f"Error scanning in-progress videos: {e}")
             import traceback
             traceback.print_exc()
 
@@ -1334,6 +1474,11 @@ class RetroMLSimple:
         """Handle video filter change."""
         self._refresh_videos()
 
+    def _is_video_in_progress(self, item):
+        """Check if a video tree item is in-progress."""
+        tags = self.video_tree.item(item)["tags"]
+        return 'in_progress' in tags
+
     def _play_selected_video(self):
         """Play the selected video in the default video player."""
         selection = self.video_tree.selection()
@@ -1342,6 +1487,13 @@ class RetroMLSimple:
             return
 
         item = selection[0]
+
+        # Check if video is in-progress
+        if self._is_video_in_progress(item):
+            messagebox.showinfo("Video In Progress",
+                              "This video is currently being generated. Please wait until it completes.")
+            return
+
         video_path = self.video_tree.item(item)["tags"][0]
 
         try:
@@ -1370,6 +1522,13 @@ class RetroMLSimple:
             return
 
         item = selection[0]
+
+        # Check if video is in-progress
+        if self._is_video_in_progress(item):
+            messagebox.showinfo("Video In Progress",
+                              "This video is currently being generated. Please wait until it completes.")
+            return
+
         video_path = self.video_tree.item(item)["tags"][0]
         values = self.video_tree.item(item)["values"]
 
@@ -1467,6 +1626,13 @@ class RetroMLSimple:
             return
 
         item = selection[0]
+
+        # Check if video is in-progress
+        if self._is_video_in_progress(item):
+            messagebox.showinfo("Video In Progress",
+                              "Cannot delete a video that is currently being generated.")
+            return
+
         video_path = self.video_tree.item(item)["tags"][0]
         video_name = Path(video_path).name
 
@@ -1789,7 +1955,9 @@ class RetroMLSimple:
                             output_dir=str(video_output_dir),
                             clip_seconds=90,  # Not used when total_seconds is provided
                             total_seconds=total_seconds,
-                            verbose=2  # Increased verbosity for debugging
+                            verbose=2,  # Increased verbosity for debugging
+                            db=self.ml_database,  # Pass database for progress tracking
+                            run_id=run_id  # Pass run_id for progress tracking
                         )
 
                         # Update UI on main thread
