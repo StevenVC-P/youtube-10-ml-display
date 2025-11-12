@@ -51,6 +51,7 @@ models/checkpoints/*.pth
 models/checkpoints/run-*/**/*.zip
 models/checkpoints/run-*/**/*.pt
 models/checkpoints/run-*/**/*.pth
+models/checkpoints/run-*/**/*.json
 models/checkpoints/milestones/*.zip
 models/checkpoints/milestones/*.pt
 models/checkpoints/milestones/*.pth
@@ -190,6 +191,9 @@ create_working_*.py
 *_STATUS.md
 GAMEBOY_*.md
 AUTHENTIC_*.md
+*_FIX.md
+*_ISSUE*.md
+LOCAL_*.md
 
 # Archive and unused directories (keep structure but not content)
 archive/old_experiments/*

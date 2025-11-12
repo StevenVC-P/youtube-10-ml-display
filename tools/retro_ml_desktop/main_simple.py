@@ -1101,12 +1101,79 @@ class RetroMLSimple:
                             self._append_log(f"  ✅ Found {len(dir_videos)} video(s) in {run_dir.name}")
                         videos.extend(dir_videos)
 
+            # NEW: Check database for video_path entries (for custom output locations)
+            if self.ml_database:
+                self._append_log(f"🔍 Checking database for video paths...")
+                db_videos = self._scan_database_videos()
+                if db_videos:
+                    self._append_log(f"  ✅ Found {len(db_videos)} video(s) from database")
+                videos.extend(db_videos)
+
             self._append_log(f"✅ Video discovery complete: Found {len(videos)} total video(s)")
 
         except Exception as e:
             error_msg = f"Error discovering videos: {e}"
             print(error_msg)
             self._append_log(f"❌ {error_msg}")
+            import traceback
+            traceback.print_exc()
+
+        return videos
+
+    def _scan_database_videos(self):
+        """Scan for videos listed in the database (for custom output paths)."""
+        videos = []
+
+        try:
+            import sqlite3
+            conn = sqlite3.connect('ml_experiments.db')
+            cursor = conn.cursor()
+
+            # Get all runs with video_path set
+            cursor.execute('SELECT run_id, video_path FROM experiment_runs WHERE video_path IS NOT NULL AND video_path != ""')
+            rows = cursor.fetchall()
+
+            for run_id, video_path in rows:
+                if video_path and Path(video_path).exists():
+                    # Check if this is a single video file or a directory
+                    video_path_obj = Path(video_path)
+
+                    if video_path_obj.is_file():
+                        # Single video file
+                        try:
+                            stat = video_path_obj.stat()
+                            size_mb = stat.st_size / (1024 * 1024)
+                            created = datetime.fromtimestamp(stat.st_mtime)
+                            duration = self._get_video_duration(video_path_obj)
+
+                            videos.append({
+                                'name': video_path_obj.name,
+                                'path': str(video_path_obj),
+                                'type': "Training",
+                                'duration': duration,
+                                'size': f"{size_mb:.1f} MB",
+                                'created': created.strftime("%Y-%m-%d %H:%M"),
+                                'training_run': run_id
+                            })
+                        except Exception as e:
+                            print(f"Error processing database video {video_path}: {e}")
+
+                    elif video_path_obj.is_dir():
+                        # Directory containing videos - scan it
+                        dir_videos = self._scan_directory_videos(video_path_obj, run_id)
+                        videos.extend(dir_videos)
+
+                    else:
+                        # Path might be a parent directory - check parent
+                        parent_dir = video_path_obj.parent
+                        if parent_dir.exists() and parent_dir.is_dir():
+                            dir_videos = self._scan_directory_videos(parent_dir, run_id)
+                            videos.extend(dir_videos)
+
+            conn.close()
+
+        except Exception as e:
+            print(f"Error scanning database videos: {e}")
             import traceback
             traceback.print_exc()
 

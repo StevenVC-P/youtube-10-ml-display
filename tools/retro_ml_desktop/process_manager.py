@@ -87,10 +87,18 @@ class ProcessManager:
                     # Process has exited - check exit code to determine if it was successful
                     exit_code = process_info.process.poll()
                     if exit_code == 0:
+                        # Check if we've already marked this as finished (to avoid duplicate video generation)
+                        was_already_finished = process_info.status == "finished"
                         process_info.status = "finished"
+
                         # Mark run as inactive in database
                         if self.ml_database:
                             self.ml_database.mark_run_inactive(process_info.id, 'completed')
+
+                        # AUTO-GENERATE VIDEO: If training just completed and has target_hours set
+                        # This makes video generation automatic instead of manual
+                        if not was_already_finished and hasattr(process_info, 'target_hours') and process_info.target_hours:
+                            self._auto_generate_video(process_info)
                     else:
                         process_info.status = "failed"
                         # Mark run as inactive in database
@@ -356,7 +364,11 @@ class ProcessManager:
                 process=process,
                 config_data=config_data
             )
-            
+
+            # Store target_hours for automatic video generation
+            if target_hours is not None:
+                process_info.target_hours = target_hours
+
             self.processes[run_id] = process_info
 
             # Start log streaming automatically for progress tracking
@@ -862,6 +874,73 @@ def get_detailed_gpu_info() -> List[GPUResource]:
             pass  # No GPUs available
 
     return gpu_resources
+
+    def _auto_generate_video(self, process_info: ProcessInfo):
+        """
+        Automatically generate video after training completes.
+        This runs in a background thread to avoid blocking the UI.
+        """
+        import threading
+
+        def generate_video_thread():
+            try:
+                run_id = process_info.id
+                target_hours = process_info.target_hours
+
+                # Convert target hours to seconds
+                total_seconds = int(target_hours * 3600)
+
+                print(f"[AutoVideo] Starting automatic video generation for {run_id}")
+                print(f"[AutoVideo] Target duration: {target_hours}h ({total_seconds}s)")
+
+                # Get checkpoint directory
+                checkpoint_dir = self.project_root / "models" / "checkpoints" / run_id / "milestones"
+
+                if not checkpoint_dir.exists():
+                    print(f"[AutoVideo] No checkpoints found at {checkpoint_dir}")
+                    return
+
+                # Get output directory from config or use default
+                config_data = process_info.config_data
+                custom_output_path = config_data.get('paths', {}).get('videos_milestones')
+
+                if custom_output_path:
+                    # Use the parent directory of videos_milestones
+                    output_dir = Path(custom_output_path).parent
+                else:
+                    # Use default video directory
+                    output_dir = self.project_root / "video" / "post_training"
+
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+                # Get config path
+                config_path = self._temp_configs.get(run_id)
+                if not config_path or not Path(config_path).exists():
+                    config_path = str(self.project_root / "conf" / "config.yaml")
+
+                # Generate the video
+                success = generate_post_training_videos(
+                    config_path=config_path,
+                    model_dir=str(checkpoint_dir),
+                    output_dir=str(output_dir),
+                    clip_seconds=90,  # Not used when total_seconds is provided
+                    total_seconds=total_seconds,
+                    verbose=1
+                )
+
+                if success:
+                    print(f"[AutoVideo] ✅ Video generation complete for {run_id}")
+                else:
+                    print(f"[AutoVideo] ❌ Video generation failed for {run_id}")
+
+            except Exception as e:
+                print(f"[AutoVideo] Error in automatic video generation: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # Start video generation in background thread
+        thread = threading.Thread(target=generate_video_thread, daemon=True)
+        thread.start()
 
 def get_available_cpus() -> List[int]:
     """Get list of available CPU cores (legacy function)."""

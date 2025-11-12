@@ -222,7 +222,16 @@ class PostTrainingVideoGenerator:
             return None
 
         # Concatenate all videos into one
-        output_path = self.output_dir / f"training_progression_{total_seconds}s.mp4"
+        # Use a more descriptive filename with game name and duration
+        game_name = self.config.get('game', {}).get('env_id', 'game').split('/')[-1].split('-')[0].lower()
+        minutes = total_seconds / 60
+        if minutes >= 60:
+            hours = minutes / 60
+            duration_str = f"{hours:.1f}h"
+        else:
+            duration_str = f"{int(minutes)}min"
+
+        output_path = self.output_dir / f"{game_name}_{duration_str}_training.mp4"
 
         print(f"[PostVideo] Concatenating {len(temp_videos)} segments into continuous video...")
 
@@ -230,9 +239,29 @@ class PostTrainingVideoGenerator:
 
         if success:
             print(f"[PostVideo] ✅ Continuous video generated: {output_path.name}")
+
+            # IMPORTANT: Clean up intermediate milestone videos
+            # The user only wants the final continuous video, not the segments
+            if self.verbose >= 1:
+                print(f"[PostVideo] Cleaning up {len(temp_videos)} intermediate video segments...")
+
+            for temp_video in temp_videos:
+                try:
+                    if temp_video.exists():
+                        temp_video.unlink()
+                        if self.verbose >= 2:
+                            print(f"[PostVideo]   Deleted: {temp_video.name}")
+                except Exception as e:
+                    if self.verbose >= 1:
+                        print(f"[PostVideo]   Warning: Could not delete {temp_video.name}: {e}")
+
+            if self.verbose >= 1:
+                print(f"[PostVideo] ✅ Cleanup complete. Only final video remains: {output_path.name}")
+
             return output_path
         else:
             print(f"[PostVideo] ❌ Failed to concatenate videos")
+            # Don't clean up temp videos if concatenation failed (for debugging)
             return None
     
     def _generate_milestone_video(self, milestone_pct: float, checkpoint_path: Path) -> Optional[Path]:
@@ -241,39 +270,34 @@ class PostTrainingVideoGenerator:
             # Create video filename
             video_filename = f"step_post_training_pct_{milestone_pct:.0f}_analytics.mp4"
             video_path = self.output_dir / video_filename
-            
+
             if self.verbose >= 1:
                 print(f"[PostVideo] Generating video: {video_filename}")
-            
+
             # Load model from checkpoint
             model = self._load_model(checkpoint_path)
             if model is None:
                 return None
-            
+
             # Create evaluation environment with proper wrappers and rgb_array render mode
             env = make_eval_env(
                 config=self.config,
                 seed=42,  # Fixed seed for reproducible videos
                 record_video=True  # This enables rgb_array render mode
             )
-            
-            # Record gameplay frames
-            frames = self._record_gameplay_frames(model, env)
-            
-            if not frames:
-                print(f"[PostVideo] No frames recorded for {milestone_pct}%")
-                return None
-            
-            # Create video from frames
-            success = self._create_video_from_frames(frames, video_path)
-            
+
+            # Record gameplay frames DIRECTLY to video (streaming mode)
+            success = self._record_gameplay_to_video(model, env, video_path)
+
             # Cleanup
             env.close()
-            
+
             return video_path if success else None
-            
+
         except Exception as e:
             print(f"[PostVideo] Error in _generate_milestone_video: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def _load_model(self, model_path: Path):
@@ -293,13 +317,121 @@ class PostTrainingVideoGenerator:
             print(f"[PostVideo] Failed to load model from {model_path}: {e}")
             return None
     
+    def _record_gameplay_to_video(self, model, env, output_path: Path) -> bool:
+        """
+        Record gameplay frames directly to video file (streaming mode).
+        This avoids storing all frames in memory, which is critical for long videos.
+        """
+        try:
+            target_frames = self.clip_seconds * self.fps
+
+            if self.verbose >= 1:
+                print(f"[PostVideo] Recording {target_frames} frames ({self.clip_seconds}s) directly to video...")
+
+            # Initialize video writer (will be created on first frame)
+            video_writer = None
+
+            obs, _ = env.reset()
+            total_reward = 0.0
+            frames_since_reset = 0
+            episode_count = 0
+            frames_written = 0
+
+            # Add small exploration to prevent stuck patterns
+            exploration_rate = 0.05  # 5% random actions
+
+            for frame_idx in range(target_frames):
+                # Get frame from environment
+                game_frame = env.render()
+
+                if game_frame is not None:
+                    # Extract ML analytics for this frame
+                    analytics = self._extract_ml_analytics(model, obs, frame_idx, total_reward)
+                    analytics['episode_count'] = episode_count
+                    analytics['frames_since_reset'] = frames_since_reset
+
+                    # Create enhanced frame with neural network visualization
+                    enhanced_frame = self._create_enhanced_frame(game_frame, analytics)
+
+                    # Initialize video writer on first frame
+                    if video_writer is None:
+                        height, width = enhanced_frame.shape[:2]
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        video_writer = cv2.VideoWriter(str(output_path), fourcc, self.fps, (width, height))
+
+                        if not video_writer.isOpened():
+                            print(f"[PostVideo] Failed to open video writer for {output_path}")
+                            return False
+
+                    # Write frame directly to video file
+                    video_writer.write(enhanced_frame)
+                    frames_written += 1
+
+                    # Progress indicator every 10 seconds
+                    if self.verbose >= 1 and frame_idx % (self.fps * 10) == 0 and frame_idx > 0:
+                        elapsed_seconds = frame_idx // self.fps
+                        print(f"[PostVideo]   Progress: {elapsed_seconds}s / {self.clip_seconds}s ({frames_written} frames)")
+
+                # Get action from model with epsilon-greedy exploration
+                if np.random.random() < exploration_rate:
+                    # Random action for exploration
+                    action = env.action_space.sample()
+                else:
+                    # Use model's action (deterministic for consistency)
+                    action, _ = model.predict(obs, deterministic=True)
+
+                # For Breakout: ensure FIRE is pressed shortly after reset to launch ball
+                # This prevents the agent from getting stuck at the start screen
+                if frames_since_reset < 10 and frames_since_reset % 3 == 0:
+                    # Action 1 is typically FIRE in Breakout
+                    if hasattr(env.action_space, 'n') and env.action_space.n >= 2:
+                        action = 1  # FIRE action
+
+                # Step environment
+                obs, reward, terminated, truncated, info = env.step(action)
+                total_reward += reward
+                frames_since_reset += 1
+
+                # Reset if episode ends
+                if terminated or truncated:
+                    obs, _ = env.reset()
+                    total_reward = 0.0
+                    frames_since_reset = 0
+                    episode_count += 1
+
+            # Release video writer
+            if video_writer is not None:
+                video_writer.release()
+
+            if self.verbose >= 1:
+                print(f"[PostVideo]   Completed: {frames_written} frames written to {output_path.name}")
+
+            return output_path.exists() and frames_written > 0
+
+        except Exception as e:
+            print(f"[PostVideo] Error in _record_gameplay_to_video: {e}")
+            import traceback
+            traceback.print_exc()
+            if video_writer is not None:
+                video_writer.release()
+            return False
+
     def _record_gameplay_frames(self, model, env) -> List[np.ndarray]:
-        """Record gameplay frames with neural network visualization using the trained model."""
+        """
+        DEPRECATED: Record gameplay frames with neural network visualization using the trained model.
+        This method stores all frames in memory and should only be used for short videos.
+        For long videos, use _record_gameplay_to_video instead.
+        """
         frames = []
         target_frames = self.clip_seconds * self.fps
 
         obs, _ = env.reset()
         total_reward = 0.0
+        frames_since_reset = 0
+        episode_count = 0
+
+        # Add small exploration to prevent stuck patterns
+        exploration_rate = 0.05  # 5% random actions
 
         for frame_idx in range(target_frames):
             # Get frame from environment
@@ -308,22 +440,39 @@ class PostTrainingVideoGenerator:
             if game_frame is not None:
                 # Extract ML analytics for this frame
                 analytics = self._extract_ml_analytics(model, obs, frame_idx, total_reward)
+                analytics['episode_count'] = episode_count
+                analytics['frames_since_reset'] = frames_since_reset
 
                 # Create enhanced frame with neural network visualization
                 enhanced_frame = self._create_enhanced_frame(game_frame, analytics)
                 frames.append(enhanced_frame)
 
-            # Get action from model
-            action, _ = model.predict(obs, deterministic=True)
+            # Get action from model with epsilon-greedy exploration
+            if np.random.random() < exploration_rate:
+                # Random action for exploration
+                action = env.action_space.sample()
+            else:
+                # Use model's action (deterministic for consistency)
+                action, _ = model.predict(obs, deterministic=True)
+
+            # For Breakout: ensure FIRE is pressed shortly after reset to launch ball
+            # This prevents the agent from getting stuck at the start screen
+            if frames_since_reset < 10 and frames_since_reset % 3 == 0:
+                # Action 1 is typically FIRE in Breakout
+                if hasattr(env.action_space, 'n') and env.action_space.n >= 2:
+                    action = 1  # FIRE action
 
             # Step environment
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += reward
+            frames_since_reset += 1
 
             # Reset if episode ends
             if terminated or truncated:
                 obs, _ = env.reset()
                 total_reward = 0.0
+                frames_since_reset = 0
+                episode_count += 1
 
         return frames
     
@@ -440,6 +589,7 @@ class PostTrainingVideoGenerator:
         yellow = (0, 255, 255)
         green = (0, 255, 0)
         blue = (255, 0, 0)
+        cyan = (255, 255, 0)
 
         # Font
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -463,12 +613,21 @@ class PostTrainingVideoGenerator:
 
         frame_idx = analytics.get('frame_in_video', 0)
         episode_reward = analytics.get('episode_reward', 0.0)
+        episode_count = analytics.get('episode_count', 0)
+        frames_since_reset = analytics.get('frames_since_reset', 0)
 
         cv2.putText(panel, f"Frame:      {frame_idx:,}", (10, int(y_pos)), mono_font, 0.4, white, 1)
         y_pos += line_height
         cv2.putText(panel, f"Progress:   {progress:.2f}%", (10, int(y_pos)), mono_font, 0.4, white, 1)
         y_pos += line_height
+        cv2.putText(panel, f"Episode:    #{episode_count}", (10, int(y_pos)), mono_font, 0.4, cyan, 1)
+        y_pos += line_height
         cv2.putText(panel, f"Ep Reward:  {episode_reward:.1f}", (10, int(y_pos)), mono_font, 0.4, white, 1)
+        y_pos += line_height
+
+        # Show "NEW EPISODE" indicator for first few frames after reset
+        if frames_since_reset < 30:
+            cv2.putText(panel, ">>> NEW EPISODE <<<", (10, int(y_pos)), mono_font, 0.4, yellow, 1)
         y_pos += line_height * 1.5
 
         # Action probabilities
