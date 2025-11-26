@@ -264,9 +264,8 @@ class ExperimentManager:
 
     def _ensure_tables(self) -> None:
         """Ensure required database tables exist."""
-        # This will be implemented when we update ml_database.py
-        # For now, just log
-        logger.debug("Checking experiment tables...")
+        # Tables are automatically created by MetricsDatabase._init_database()
+        logger.debug("Experiment tables initialized")
 
     def create_experiment(
         self,
@@ -342,10 +341,14 @@ class ExperimentManager:
         Returns:
             Experiment instance or None if not found
         """
-        # This will be implemented when we update ml_database.py
-        # For now, return None
-        logger.debug(f"Getting experiment {experiment_id}")
-        return None
+        try:
+            exp_dict = self.database.get_experiment(experiment_id)
+            if exp_dict:
+                return Experiment.from_dict(exp_dict)
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get experiment {experiment_id}: {e}")
+            return None
 
     def update_experiment_status(
         self,
@@ -441,9 +444,12 @@ class ExperimentManager:
         Returns:
             List of Experiment instances (newest first)
         """
-        # This will be implemented when we update ml_database.py
-        logger.debug(f"Listing experiments (status={status}, game={game}, limit={limit})")
-        return []
+        try:
+            exp_dicts = self.database.list_experiments(status=status, game=game, limit=limit)
+            return [Experiment.from_dict(exp_dict) for exp_dict in exp_dicts]
+        except Exception as e:
+            logger.error(f"Failed to list experiments: {e}")
+            return []
 
     def get_recent_experiments(self, limit: int = 5) -> List[Experiment]:
         """
@@ -473,8 +479,12 @@ class ExperimentManager:
         Args:
             experiment: Experiment to save
         """
-        # This will be implemented when we update ml_database.py
-        logger.debug(f"Saving experiment {experiment.id}")
+        try:
+            exp_dict = experiment.to_dict()
+            self.database.save_experiment(exp_dict)
+            logger.debug(f"Saved experiment {experiment.id}")
+        except Exception as e:
+            logger.error(f"Failed to save experiment {experiment.id}: {e}")
 
     def delete_experiment(self, experiment_id: str) -> bool:
         """
@@ -486,6 +496,9 @@ class ExperimentManager:
         Returns:
             True if deleted successfully
         """
-        logger.info(f"Deleting experiment {experiment_id}")
-        # This will be implemented when we update ml_database.py
-        return False
+        try:
+            logger.info(f"Deleting experiment {experiment_id}")
+            return self.database.delete_experiment(experiment_id)
+        except Exception as e:
+            logger.error(f"Failed to delete experiment {experiment_id}: {e}")
+            return False
