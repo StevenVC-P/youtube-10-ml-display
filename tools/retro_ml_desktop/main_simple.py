@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 # Add the project root to the path so we can import our modules
-project_root = Path(__file__).parent.parent.parent
+# Handle both frozen and normal execution
+if getattr(sys, 'frozen', False):
+    # Running as frozen executable
+    project_root = Path(sys.executable).parent
+else:
+    # Running as normal Python script
+    project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from tools.retro_ml_desktop.monitor import SystemMonitor, SystemMetrics, get_gpu_status_message
@@ -32,8 +38,17 @@ from tools.retro_ml_desktop.cuda_diagnostics import CUDADiagnostics, create_user
 
 class RetroMLSimple:
     """Simple ML training process manager - no Docker required."""
-    
-    def __init__(self):
+
+    def __init__(self, config=None):
+        """
+        Initialize Retro ML Simple application.
+
+        Args:
+            config: Optional ConfigManager instance. If None, uses default paths.
+        """
+        # Store config manager
+        self.config_manager = config
+
         # Configure logging to show in terminal
         # Set root logger to WARNING to reduce noise
         logging.basicConfig(
@@ -57,14 +72,20 @@ class RetroMLSimple:
         # Set appearance mode and color theme
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
-        
+
         # Initialize components
         self.project_root = project_root
         self.system_monitor = SystemMonitor(update_interval=2.0)
         self.process_manager = ProcessManager(str(project_root))
 
         # Initialize ML tracking system
-        self.ml_database = MetricsDatabase(str(project_root / "ml_experiments.db"))
+        # Use config manager's database path if available
+        if self.config_manager:
+            db_path = str(self.config_manager.get_database_path())
+        else:
+            db_path = str(project_root / "ml_experiments.db")
+
+        self.ml_database = MetricsDatabase(db_path)
         self.ml_collector = MetricsCollector(self.ml_database)
 
         # Connect database to process manager
@@ -252,11 +273,13 @@ class RetroMLSimple:
         self.processes_tab = self.tabview.add("Training Processes")
         self.ml_dashboard_tab = self.tabview.add("🧪 ML Dashboard")
         self.videos_tab = self.tabview.add("Video Gallery")
+        self.settings_tab = self.tabview.add("⚙️ Settings")
 
         # Setup each tab
         self._setup_processes_tab()
         self._setup_ml_dashboard_tab()
         self._setup_videos_tab()
+        self._setup_settings_tab()
     
     def _setup_processes_tab(self):
         """Setup the processes tab with process list."""
@@ -425,6 +448,258 @@ class RetroMLSimple:
         # Start auto-refresh timer for in-progress videos
         self._video_refresh_timer = None
         self._schedule_video_refresh()
+
+    def _setup_settings_tab(self):
+        """Setup the settings tab with system configuration and ROM installation."""
+        # Main container
+        main_frame = ctk.CTkFrame(self.settings_tab)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Title
+        title_label = ctk.CTkLabel(main_frame, text="⚙️ Settings & Configuration",
+                                  font=ctk.CTkFont(size=18, weight="bold"))
+        title_label.pack(pady=(10, 20))
+
+        # Create scrollable frame for settings
+        scrollable_frame = ctk.CTkScrollableFrame(main_frame)
+        scrollable_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # ========== ROM Installation Section ==========
+        rom_section = ctk.CTkFrame(scrollable_frame)
+        rom_section.pack(fill="x", padx=10, pady=(0, 20))
+
+        rom_title = ctk.CTkLabel(rom_section, text="🎮 Atari ROM Installation",
+                                font=ctk.CTkFont(size=16, weight="bold"))
+        rom_title.pack(pady=(15, 10), padx=15, anchor="w")
+
+        rom_info_frame = ctk.CTkFrame(rom_section)
+        rom_info_frame.pack(fill="x", padx=15, pady=5)
+
+        # Check ROM status
+        rom_status = self._check_rom_status()
+
+        if rom_status['installed']:
+            status_icon = "✅"
+            status_text = f"ROMs Installed ({rom_status['count']} games available)"
+            status_color = "green"
+        else:
+            status_icon = "❌"
+            status_text = "ROMs Not Installed"
+            status_color = "orange"
+
+        self.rom_status_label = ctk.CTkLabel(rom_info_frame,
+                                            text=f"{status_icon} {status_text}",
+                                            font=ctk.CTkFont(size=14),
+                                            text_color=status_color)
+        self.rom_status_label.pack(pady=10, padx=10, anchor="w")
+
+        rom_desc = ctk.CTkLabel(rom_info_frame,
+                               text="Atari 2600 ROMs are required for training. They will be downloaded\n"
+                                    "using AutoROM under the Atari 2600 license.",
+                               justify="left",
+                               text_color="gray")
+        rom_desc.pack(pady=5, padx=10, anchor="w")
+
+        # Install/Reinstall button
+        button_text = "🔄 Reinstall ROMs" if rom_status['installed'] else "📥 Install ROMs"
+        self.install_roms_btn = ctk.CTkButton(rom_section,
+                                             text=button_text,
+                                             command=self._install_roms_from_settings,
+                                             fg_color="#007bff",
+                                             hover_color="#0056b3",
+                                             height=40,
+                                             font=ctk.CTkFont(size=14))
+        self.install_roms_btn.pack(pady=10, padx=15, fill="x")
+
+        # ROM progress bar (hidden by default)
+        self.rom_progress_bar = ctk.CTkProgressBar(rom_section)
+        self.rom_progress_bar.set(0)
+
+        # ROM status message (hidden by default)
+        self.rom_install_status = ctk.CTkLabel(rom_section, text="", font=ctk.CTkFont(size=12))
+
+        # ========== System Information Section ==========
+        system_section = ctk.CTkFrame(scrollable_frame)
+        system_section.pack(fill="x", padx=10, pady=(0, 20))
+
+        system_title = ctk.CTkLabel(system_section, text="💻 System Information",
+                                   font=ctk.CTkFont(size=16, weight="bold"))
+        system_title.pack(pady=(15, 10), padx=15, anchor="w")
+
+        # System info display
+        if self.config_manager:
+            caps = self.config_manager.config.get('system', {})
+            system_info_text = (
+                f"GPU Detected: {'✅ Yes' if caps.get('gpu_detected') else '❌ No'}\n"
+                f"CUDA Available: {'✅ Yes' if caps.get('cuda_available') else '❌ No'}\n"
+                f"FFmpeg Available: {'✅ Yes' if caps.get('ffmpeg_available') else '❌ No'}\n"
+                f"Atari ROMs: {'✅ Installed' if caps.get('atari_roms_installed') else '❌ Not Installed'}"
+            )
+        else:
+            system_info_text = "Configuration not available"
+
+        system_info_label = ctk.CTkLabel(system_section,
+                                        text=system_info_text,
+                                        justify="left",
+                                        font=ctk.CTkFont(size=13))
+        system_info_label.pack(pady=10, padx=15, anchor="w")
+
+        # ========== Paths Section ==========
+        paths_section = ctk.CTkFrame(scrollable_frame)
+        paths_section.pack(fill="x", padx=10, pady=(0, 20))
+
+        paths_title = ctk.CTkLabel(paths_section, text="📁 Configuration Paths",
+                                  font=ctk.CTkFont(size=16, weight="bold"))
+        paths_title.pack(pady=(15, 10), padx=15, anchor="w")
+
+        if self.config_manager:
+            paths_info_text = (
+                f"Installation: {self.config_manager.get_path('install_dir')}\n"
+                f"Models: {self.config_manager.get_path('models_dir')}\n"
+                f"Videos: {self.config_manager.get_path('videos_dir')}\n"
+                f"Database: {self.config_manager.get_path('database_dir')}\n"
+                f"Logs: {self.config_manager.get_path('logs_dir')}\n"
+                f"Config: {self.config_manager.get_path('config_dir')}"
+            )
+        else:
+            paths_info_text = f"Project Root: {self.project_root}"
+
+        paths_info_label = ctk.CTkLabel(paths_section,
+                                       text=paths_info_text,
+                                       justify="left",
+                                       font=ctk.CTkFont(size=12),
+                                       text_color="gray")
+        paths_info_label.pack(pady=10, padx=15, anchor="w")
+
+    def _check_rom_status(self):
+        """Check if Atari ROMs are installed."""
+        try:
+            import ale_py.roms as roms
+            rom_dir = Path(roms.__file__).parent
+            rom_files = list(rom_dir.glob('*.bin'))
+            return {
+                'installed': len(rom_files) > 0,
+                'count': len(rom_files),
+                'path': str(rom_dir)
+            }
+        except (ImportError, AttributeError):
+            return {
+                'installed': False,
+                'count': 0,
+                'path': None
+            }
+
+    def _install_roms_from_settings(self):
+        """Install Atari ROMs from the Settings tab."""
+        import subprocess
+        import sys
+
+        # Disable button and show progress
+        self.install_roms_btn.configure(state="disabled")
+        self.rom_progress_bar.pack(pady=5, padx=15, fill="x")
+        self.rom_progress_bar.set(0)
+        self.rom_install_status.configure(text="📥 Installing ROMs...", text_color="blue")
+        self.rom_install_status.pack(pady=5, padx=15)
+
+        def install_thread():
+            try:
+                # Check if autorom is installed
+                try:
+                    import autorom
+                except ImportError:
+                    # AutoROM not installed, install it first
+                    self.root.after(0, lambda: self.rom_install_status.configure(
+                        text="Installing AutoROM package...", text_color="blue"))
+
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "autorom[accept-rom-license]"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120
+                    )
+
+                    if result.returncode != 0:
+                        error_msg = "Failed to install AutoROM package"
+                        self.root.after(0, lambda: self._on_rom_install_error(error_msg))
+                        return
+
+                # Update progress
+                self.root.after(0, lambda: self.rom_progress_bar.set(0.3))
+                self.root.after(0, lambda: self.rom_install_status.configure(
+                    text="Downloading Atari ROMs...", text_color="blue"))
+
+                # Find AutoROM executable
+                # AutoROM installs as an executable (AutoROM.exe), not a Python module
+                if getattr(sys, 'frozen', False):
+                    # Running as frozen executable - AutoROM should be in same dir
+                    autorom_exe = Path(sys.executable).parent / "AutoROM.exe"
+                else:
+                    # Running as script - AutoROM in Scripts dir of Python installation or venv
+                    autorom_exe = Path(sys.executable).parent / "AutoROM.exe"
+                    if not autorom_exe.exists():
+                        # Try Scripts directory
+                        autorom_exe = Path(sys.executable).parent / "Scripts" / "AutoROM.exe"
+
+                if not autorom_exe.exists():
+                    error_msg = f"AutoROM.exe not found at {autorom_exe}"
+                    self.root.after(0, lambda: self._on_rom_install_error(error_msg))
+                    return
+
+                # Run autorom installation using the executable
+                result = subprocess.run(
+                    [str(autorom_exe), "--accept-license"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+
+                if result.returncode == 0:
+                    # Success
+                    self.root.after(0, lambda: self._on_rom_install_success())
+                else:
+                    # Error
+                    error_msg = result.stderr or result.stdout or "Unknown error"
+                    self.root.after(0, lambda: self._on_rom_install_error(error_msg))
+
+            except subprocess.TimeoutExpired:
+                self.root.after(0, lambda: self._on_rom_install_error("Installation timed out"))
+            except Exception as e:
+                self.root.after(0, lambda: self._on_rom_install_error(str(e)))
+
+        # Run installation in background thread
+        threading.Thread(target=install_thread, daemon=True).start()
+
+    def _on_rom_install_success(self):
+        """Handle successful ROM installation."""
+        self.rom_progress_bar.set(1.0)
+        self.rom_install_status.configure(text="✅ ROMs installed successfully!", text_color="green")
+
+        # Update ROM status
+        rom_status = self._check_rom_status()
+        self.rom_status_label.configure(
+            text=f"✅ ROMs Installed ({rom_status['count']} games available)",
+            text_color="green"
+        )
+        self.install_roms_btn.configure(text="🔄 Reinstall ROMs", state="normal")
+
+        # Update config if available
+        if self.config_manager:
+            self.config_manager.set('system.atari_roms_installed', True)
+            self.config_manager.save()
+
+        # Hide progress after 3 seconds
+        self.root.after(3000, lambda: self.rom_progress_bar.pack_forget())
+
+    def _on_rom_install_error(self, error_msg: str):
+        """Handle ROM installation error."""
+        self.rom_progress_bar.set(0)
+        self.rom_progress_bar.pack_forget()
+        self.rom_install_status.configure(
+            text=f"❌ Installation failed: {error_msg}\n"
+                 "You can try installing manually: pip install autorom[accept-rom-license] && autorom --accept-license",
+            text_color="red"
+        )
+        self.install_roms_btn.configure(state="normal")
 
     def _update_dashboard(self, metrics: SystemMetrics):
         """Update sidebar with new metrics."""
@@ -2024,8 +2299,15 @@ class RetroMLSimple:
                 preset = self.presets[config['preset']]
 
             # Prepare resource limits with optimized defaults
+            # CRITICAL FIX: Detect actual CPU count to avoid "invalid CPU" error on VMs
+            import psutil
+            actual_cpu_count = psutil.cpu_count(logical=True)
+            requested_cores = config.get('cpu_cores', 12)
+            # Only use cores that actually exist
+            available_cores = min(requested_cores, actual_cpu_count) if actual_cpu_count else requested_cores
+
             resources = ResourceLimits(
-                cpu_affinity=list(range(config.get('cpu_cores', 12))),  # Increased from 4 to 12 cores
+                cpu_affinity=list(range(available_cores)),  # Only use cores that exist
                 memory_limit_gb=config.get('memory_limit_gb'),
                 priority=config.get('priority', 'normal'),
                 gpu_id=config.get('gpu_id') if config.get('gpu_id') != 'auto' else None
@@ -2652,7 +2934,21 @@ class StartTrainingDialog:
         self.resource_config = None
         self.algo_var = tk.StringVar(value="PPO")
         self.run_id_var = tk.StringVar(value=generate_run_id())
-        self.output_path_var = tk.StringVar(value="D:\\ML_Videos")
+
+        # Use Documents folder or user's home directory for videos (cross-platform compatible)
+        try:
+            # Try to use Documents folder
+            import os
+            if sys.platform == 'win32':
+                docs_path = Path(os.environ.get('USERPROFILE', Path.home())) / 'Documents' / 'ML_Videos'
+            else:
+                docs_path = Path.home() / 'Documents' / 'ML_Videos'
+            default_video_path = str(docs_path)
+        except:
+            # Fallback to home directory
+            default_video_path = str(Path.home() / 'ML_Videos')
+
+        self.output_path_var = tk.StringVar(value=default_video_path)
 
         # Action Buttons (right after video length)
         button_frame = ctk.CTkFrame(main_frame)

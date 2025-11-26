@@ -53,9 +53,16 @@ class ProcessManager:
         self._temp_configs: Dict[str, str] = {}  # Track temp config files
         self.ml_database = None  # Will be set by the main application
 
-        # Ensure we can find the training script and base config
-        self.train_script = self.project_root / "training" / "train.py"
-        self.base_config = self.project_root / "conf" / "config.yaml"
+        # Find training script and base config - handle frozen executables
+        if getattr(sys, 'frozen', False):
+            # Running as frozen executable - use _MEIPASS
+            base_path = Path(sys._MEIPASS)
+        else:
+            # Running as normal Python script
+            base_path = self.project_root
+
+        self.train_script = base_path / "training" / "train.py"
+        self.base_config = base_path / "conf" / "config.yaml"
 
         if not self.train_script.exists():
             raise FileNotFoundError(f"Training script not found: {self.train_script}")

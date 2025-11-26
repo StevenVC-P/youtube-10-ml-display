@@ -1,0 +1,36 @@
+app:
+  name: Retro ML Trainer
+  version: 1.0.0
+  first_run_completed: false
+paths:
+  install_dir: .
+  models_dir: models
+  videos_dir: videos
+  database_dir: data
+  logs_dir: logs
+  config_dir: config
+training:
+  default_game: breakout
+  default_algorithm: PPO
+  default_timesteps: 1000000
+  use_gpu: true
+  auto_save_interval: 300
+video:
+  fps: 30
+  quality: high
+  auto_generate: true
+  milestone_intervals:
+  - 0
+  - 1
+  - 5
+  - 10
+  - 25
+  - 50
+  - 75
+  - 90
+  - 100
+system:
+  gpu_detected: false
+  cuda_available: false
+  ffmpeg_available: false
+  atari_roms_installed: false
