@@ -10,12 +10,19 @@ import os
 import sys
 import subprocess
 import psutil
-import torch
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+
+# Try to import torch, but don't fail if it's not installed yet
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None  # type: ignore
 
 
 @dataclass
@@ -103,10 +110,31 @@ class CUDADiagnostics:
     def diagnose_system(self) -> CUDADiagnosticInfo:
         """
         Perform comprehensive CUDA system diagnostics.
-        
+
         Returns:
             CUDADiagnosticInfo with complete system information
         """
+        # Check if torch is available
+        if not TORCH_AVAILABLE or torch is None:
+            # PyTorch not installed - return minimal diagnostics
+            system_memory = {
+                "total_gb": psutil.virtual_memory().total / (1024**3),
+                "available_gb": psutil.virtual_memory().available / (1024**3),
+                "used_gb": psutil.virtual_memory().used / (1024**3),
+                "percent_used": psutil.virtual_memory().percent
+            }
+            return CUDADiagnosticInfo(
+                cuda_available=False,
+                cuda_version=None,
+                driver_version=None,
+                device_count=0,
+                devices=[],
+                memory_info=[],
+                system_memory=system_memory,
+                pytorch_version="Not installed",
+                recommendations=["PyTorch is not installed. Please run the setup wizard to install dependencies."]
+            )
+
         # Basic CUDA availability
         cuda_available = torch.cuda.is_available()
         

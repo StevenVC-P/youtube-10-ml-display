@@ -230,6 +230,42 @@ test_collector.db
 *.sqlite-shm
 *.sqlite-wal
 
+# Documentation - Temporary guides and status files
+# Keep: README.md, KNOWN_ISSUES.md, docs/{USER_GUIDE,COMMAND_REFERENCE,DISTRIBUTION_GUIDE,PROJECT_STRUCTURE,REPOSITORY_STRUCTURE,CURRENT_ARCHITECTURE}.md
+!KNOWN_ISSUES.md
+START_HERE.md
+CLEAN_TESTING_GUIDE.md
+QUICK_TEST_GUIDE.md
+TESTING_INSTRUCTIONS.md
+OVERNIGHT_TRAINING_STATUS.md
+PROFESSIONAL_INSTALLER_SUMMARY.md
+QUICK_START_VIDEO_GENERATION.md
+VIDEO_GALLERY_FIX_SUMMARY.md
+VIDEO_GENERATION_FIX.md
+VIDEO_STUCK_ISSUE_FIX.md
+*_GUIDE.md
+*_SUMMARY.md
+*_FIX.md
+*_INSTRUCTIONS.md
+
+# Documentation - Temporary development docs in docs/
+docs/SPRINT*_COMPLETION_REPORT.md
+docs/CLEANUP_SUMMARY.md
+docs/GAMEBOY_EMULATION_SETUP.md
+docs/GPU_DETECTION_IMPROVEMENTS.md
+docs/HYBRID_INSTALLER_APPROACH.md
+docs/INSTALLER_MODERNIZATION_SUMMARY.md
+docs/MODERN_INSTALLER_GUIDE.md
+docs/PROFESSIONAL_INSTALLER_GUIDE.md
+docs/TESTING_GUIDE.md
+docs/READY_FOR_PRODUCTION.md
+docs/REORGANIZATION_SUMMARY.md
+docs/NEURAL_NETWORK_VISUALIZATION_FEATURE.md
+docs/NEURAL_NETWORK_VISUALIZATION_FIX.md
+docs/*_SUMMARY.md
+docs/*_FIX.md
+docs/*_REPORT.md
+
 # ML Training Test Files
 test_ml_tracking.py
 test_cuda_diagnostics.py
@@ -306,3 +342,27 @@ ui/frontend/build/
 fix_stale_experiments.py
 update_database_schema.py
 test_ml_experiments.db
+
+# IDE and Editor Configuration
+.claude/
+.claude/**
+
+# Build and Distribution
+installer_output/
+installer_output/**/*.exe
+dist/
+dist/**/*.exe
+
+# Windows Artifacts
+NUL
+nul
+
+# User-specific Configuration
+config/settings.yaml
+config/settings.local.yaml
+config/*.local.yaml
+
+# Build Tools - FFmpeg binaries (large files, users should download separately)
+build_scripts/ffmpeg/bin/*.exe
+build_scripts/ffmpeg/bin/*.dll
+# Keep ffmpeg documentation and presets
