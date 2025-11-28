@@ -1,6 +1,8 @@
 """
 Direct Python process management for ML training runs.
 No Docker required - runs training/train.py directly.
+
+Now integrated with Event Bus and Experiment Manager for real-time updates.
 """
 
 import os
@@ -13,10 +15,17 @@ import psutil
 import secrets
 import yaml
 import tempfile
+import logging
 from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+# Import new Phase 1 systems
+from tools.retro_ml_desktop.metric_event_bus import get_event_bus, EventTypes
+from tools.retro_ml_desktop.experiment_manager import ExperimentManager, Experiment
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -43,7 +52,7 @@ class ResourceLimits:
 
 class ProcessManager:
     """Manages Python training processes directly."""
-    
+
     def __init__(self, project_root: str):
         self.project_root = Path(project_root)
         self.processes: Dict[str, ProcessInfo] = {}
@@ -52,6 +61,13 @@ class ProcessManager:
         self._log_buffers: Dict[str, str] = {}  # Store logs for progress parsing
         self._temp_configs: Dict[str, str] = {}  # Track temp config files
         self.ml_database = None  # Will be set by the main application
+
+        # Phase 1: Event Bus and Experiment Manager integration
+        self.event_bus = get_event_bus()
+        self.experiment_manager = None  # Will be initialized when database is set
+        self._experiment_map: Dict[str, str] = {}  # Maps process_id -> experiment_id
+
+        logger.info("ProcessManager initialized with Event Bus integration")
 
         # Find training script and base config - handle frozen executables
         if getattr(sys, 'frozen', False):
@@ -72,7 +88,14 @@ class ProcessManager:
         # Load base configuration
         with open(self.base_config, 'r') as f:
             self.base_config_data = yaml.safe_load(f)
-    
+
+    def set_database(self, database):
+        """Set the database and initialize Experiment Manager."""
+        self.ml_database = database
+        if database:
+            self.experiment_manager = ExperimentManager(database)
+            logger.info("Experiment Manager initialized")
+
     def get_processes(self) -> List[ProcessInfo]:
         """Get list of all training processes."""
         # Update process statuses (but preserve paused status)
@@ -101,6 +124,28 @@ class ProcessManager:
                         # Mark run as inactive in database
                         if self.ml_database:
                             self.ml_database.mark_run_inactive(process_info.id, 'completed')
+
+                        # Phase 1: Update experiment status and publish event
+                        if not was_already_finished and self.experiment_manager and process_info.id in self._experiment_map:
+                            experiment_id = self._experiment_map[process_info.id]
+                            try:
+                                # Update experiment status to completed
+                                self.experiment_manager.update_experiment_status(
+                                    experiment_id,
+                                    "completed"
+                                )
+
+                                # Publish TRAINING_COMPLETE event
+                                self.event_bus.publish(EventTypes.TRAINING_COMPLETE, {
+                                    'experiment_id': experiment_id,
+                                    'run_id': process_info.id,
+                                    'total_time': (datetime.now() - process_info.created).total_seconds()
+                                })
+
+                                logger.debug(f"Training completed for experiment {experiment_id}")
+
+                            except Exception as e:
+                                logger.error(f"Failed to update experiment {experiment_id}: {e}")
 
                         # AUTO-GENERATE VIDEO: If training just completed and has target_hours set
                         # This makes video generation automatic instead of manual
@@ -133,7 +178,30 @@ class ProcessManager:
                                     error_summary += f" - {error_lines[-1][:100]}..."
 
                         process_info.error_message = error_summary
-                        print(f"❌ {error_summary}")
+                        print(f"[ERROR] {error_summary}")
+
+                        # Phase 1: Update experiment status and publish event
+                        if self.experiment_manager and process_info.id in self._experiment_map:
+                            experiment_id = self._experiment_map[process_info.id]
+                            try:
+                                # Update experiment status to failed
+                                self.experiment_manager.update_experiment_status(
+                                    experiment_id,
+                                    "failed"
+                                )
+
+                                # Publish TRAINING_FAILED event
+                                self.event_bus.publish(EventTypes.TRAINING_FAILED, {
+                                    'experiment_id': experiment_id,
+                                    'run_id': process_info.id,
+                                    'error': error_summary,
+                                    'exit_code': exit_code
+                                })
+
+                                logger.debug(f"Training failed for experiment {experiment_id}")
+
+                            except Exception as e:
+                                logger.error(f"Failed to update experiment {experiment_id}: {e}")
 
                         if recent_logs and len(recent_logs) > 100:
                             print(f"Recent logs from failed process:\n{recent_logs[-500:]}")  # Last 500 chars
@@ -350,7 +418,8 @@ class ProcessManager:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,  # Line buffered
-                universal_newlines=True,
+                encoding='utf-8',  # Force UTF-8 encoding on Windows
+                errors='replace',  # Replace encoding errors instead of crashing
                 env=env,
                 cwd=str(self.project_root)
             )
@@ -376,13 +445,60 @@ class ProcessManager:
             if target_hours is not None:
                 process_info.target_hours = target_hours
 
+            # Store total_timesteps for progress tracking
+            process_info.total_timesteps = total_timesteps
+
             self.processes[run_id] = process_info
+
+            # Phase 1: Create experiment and publish TRAINING_STARTED event
+            if self.experiment_manager:
+                try:
+                    # Determine preset based on target_hours
+                    preset = "quick" if target_hours and target_hours < 1 else "standard"
+                    if target_hours and target_hours >= 8:
+                        preset = "epic"
+
+                    # Create experiment
+                    experiment = self.experiment_manager.create_experiment(
+                        name=f"{game} - {algorithm}",
+                        game=game,
+                        algorithm=algorithm,
+                        preset=preset,
+                        video_length_hours=target_hours or 4.0,
+                        notes=f"Training run {run_id}"
+                    )
+
+                    # Map process to experiment
+                    self._experiment_map[run_id] = experiment.id
+
+                    # Update experiment status to running
+                    self.experiment_manager.update_experiment_status(
+                        experiment.id,
+                        "running"
+                    )
+
+                    # Publish TRAINING_STARTED event
+                    self.event_bus.publish(EventTypes.TRAINING_STARTED, {
+                        'experiment_id': experiment.id,
+                        'run_id': run_id,
+                        'game': game,
+                        'algorithm': algorithm,
+                        'preset': preset,
+                        'total_timesteps': total_timesteps,
+                        'target_hours': target_hours
+                    })
+
+                    print(f"[Experiment] Created: {experiment.id} ({preset} preset, {target_hours or 4.0}h target)")
+                    logger.debug(f"Created experiment {experiment.id} for run {run_id}")
+
+                except Exception as e:
+                    logger.error(f"Failed to create experiment for run {run_id}: {e}")
 
             # Start log streaming automatically for progress tracking
             self._start_log_stream_for_process(run_id)
 
             return run_id
-            
+
         except Exception as e:
             raise RuntimeError(f"Failed to start training process: {e}")
     
@@ -471,6 +587,27 @@ class ProcessManager:
             if self.ml_database:
                 self.ml_database.mark_run_inactive(process_id, 'stopped')
 
+            # Phase 1: Update experiment and publish event
+            if self.experiment_manager and process_id in self._experiment_map:
+                experiment_id = self._experiment_map[process_id]
+                try:
+                    # Update experiment status to stopped
+                    self.experiment_manager.update_experiment_status(
+                        experiment_id,
+                        "paused"  # Using paused status for stopped
+                    )
+
+                    # Publish TRAINING_STOPPED event
+                    self.event_bus.publish(EventTypes.TRAINING_STOPPED, {
+                        'experiment_id': experiment_id,
+                        'run_id': process_id
+                    })
+
+                    logger.debug(f"Training stopped for experiment {experiment_id}")
+
+                except Exception as e:
+                    logger.error(f"Failed to update experiment {experiment_id}: {e}")
+
             # Stop log streaming
             self._stop_log_stream(process_id)
 
@@ -507,6 +644,19 @@ class ProcessManager:
 
             proc.suspend()
             process_info.status = "paused"
+
+            # Phase 1: Publish TRAINING_PAUSED event
+            if self.experiment_manager and process_id in self._experiment_map:
+                experiment_id = self._experiment_map[process_id]
+                try:
+                    self.event_bus.publish(EventTypes.TRAINING_PAUSED, {
+                        'experiment_id': experiment_id,
+                        'run_id': process_id
+                    })
+                    logger.debug(f"Training paused for experiment {experiment_id}")
+                except Exception as e:
+                    logger.error(f"Failed to publish pause event for {experiment_id}: {e}")
+
             print(f"Successfully paused process {process_id} (PID: {proc.pid})")
             return True
         except Exception as e:
@@ -539,6 +689,19 @@ class ProcessManager:
 
             proc.resume()
             process_info.status = "running"
+
+            # Phase 1: Publish TRAINING_RESUMED event
+            if self.experiment_manager and process_id in self._experiment_map:
+                experiment_id = self._experiment_map[process_id]
+                try:
+                    self.event_bus.publish(EventTypes.TRAINING_RESUMED, {
+                        'experiment_id': experiment_id,
+                        'run_id': process_id
+                    })
+                    logger.debug(f"Training resumed for experiment {experiment_id}")
+                except Exception as e:
+                    logger.error(f"Failed to publish resume event for {experiment_id}: {e}")
+
             print(f"Successfully resumed process {process_id} (PID: {proc.pid})")
             return True
         except Exception as e:
@@ -712,6 +875,9 @@ class ProcessManager:
                     if len(self._log_buffers[process_id]) > 10000:
                         self._log_buffers[process_id] = self._log_buffers[process_id][-8000:]
 
+                    # Parse metrics from log line and publish TRAINING_PROGRESS event
+                    self._parse_and_publish_metrics(process_id, line)
+
                     # Send to all callbacks
                     callbacks = self._log_callbacks.get(process_id, [])
                     for callback in callbacks:
@@ -728,6 +894,240 @@ class ProcessManager:
             if process_id in self._log_streams:
                 del self._log_streams[process_id]
 
+
+    def _parse_and_publish_metrics(self, process_id: str, log_line: str):
+        """
+        Parse training metrics from log line and publish TRAINING_PROGRESS event.
+
+        Extracts metrics from stable-baselines3 PPO/DQN log output.
+        Example log format:
+        -----------------------------------------
+        | time/              |                |
+        |    fps             | 150            |
+        |    iterations      | 100            |
+        |    time_elapsed    | 68             |
+        |    total_timesteps | 102400         |
+        | train/             |                |
+        |    approx_kl       | 0.009258024    |
+        |    clip_fraction   | 0.0833         |
+        |    entropy_loss    | -0.619         |
+        |    explained_variance | 0.912       |
+        |    learning_rate   | 0.0003         |
+        |    loss            | 14.1           |
+        |    policy_gradient_loss | -0.0134   |
+        |    value_loss      | 41.4           |
+        | rollout/           |                |
+        |    ep_len_mean     | 1440           |
+        |    ep_rew_mean     | 189.5          |
+        """
+        import re
+
+        # Only parse if this process has an experiment mapped
+        if process_id not in self._experiment_map:
+            return
+
+        experiment_id = self._experiment_map[process_id]
+
+        # Parse key metrics using regex
+        metrics = {}
+
+        # FPS (training speed)
+        if 'fps' in log_line.lower():
+            match = re.search(r'fps\s+\|\s+(\d+(?:\.\d+)?)', log_line, re.IGNORECASE)
+            if match:
+                metrics['fps'] = float(match.group(1))
+
+        # Total timesteps (progress)
+        if 'total_timesteps' in log_line.lower():
+            match = re.search(r'total_timesteps\s+\|\s+(\d+)', log_line, re.IGNORECASE)
+            if match:
+                metrics['timesteps'] = int(match.group(1))
+
+        # Mean episode reward
+        if 'ep_rew_mean' in log_line.lower():
+            match = re.search(r'ep_rew_mean\s+\|\s+(-?\d+(?:\.\d+)?)', log_line, re.IGNORECASE)
+            if match:
+                metrics['reward_mean'] = float(match.group(1))
+
+        # Policy loss
+        if 'policy_gradient_loss' in log_line.lower():
+            match = re.search(r'policy_gradient_loss\s+\|\s+(-?\d+(?:\.\d+)?)', log_line, re.IGNORECASE)
+            if match:
+                metrics['policy_loss'] = float(match.group(1))
+
+        # Value loss
+        if 'value_loss' in log_line.lower():
+            match = re.search(r'value_loss\s+\|\s+(-?\d+(?:\.\d+)?)', log_line, re.IGNORECASE)
+            if match:
+                metrics['value_loss'] = float(match.group(1))
+
+        # Episode length
+        if 'ep_len_mean' in log_line.lower():
+            match = re.search(r'ep_len_mean\s+\|\s+(-?\d+(?:\.\d+)?)', log_line, re.IGNORECASE)
+            if match:
+                metrics['episode_length'] = float(match.group(1))
+
+        # Time elapsed
+        if 'time_elapsed' in log_line.lower():
+            match = re.search(r'time_elapsed\s+\|\s+(\d+(?:\.\d+)?)', log_line, re.IGNORECASE)
+            if match:
+                metrics['elapsed_time'] = float(match.group(1))
+
+        # If we found any metrics, publish TRAINING_PROGRESS event
+        if metrics:
+            # Get process info for total timesteps
+            process_info = self.processes.get(process_id)
+            if process_info:
+                # Calculate progress percentage if we have timesteps
+                progress_data = {
+                    'experiment_id': experiment_id,
+                    'run_id': process_id,
+                    'metrics': metrics
+                }
+
+                # Add progress calculation if we have timesteps
+                if 'timesteps' in metrics and hasattr(process_info, 'total_timesteps'):
+                    total_ts = getattr(process_info, 'total_timesteps', 0)
+                    if total_ts > 0:
+                        progress_pct = (metrics['timesteps'] / total_ts) * 100
+                        progress_data['progress_pct'] = progress_pct
+                        progress_data['timestep'] = metrics['timesteps']
+                        progress_data['total_timesteps'] = total_ts
+
+                        # Estimate time remaining
+                        if 'elapsed_time' in metrics and metrics['elapsed_time'] > 0:
+                            remaining_ts = total_ts - metrics['timesteps']
+                            time_per_ts = metrics['elapsed_time'] / metrics['timesteps']
+                            eta = remaining_ts * time_per_ts
+                            progress_data['estimated_time_remaining'] = eta
+
+                # Publish event
+                try:
+                    self.event_bus.publish(EventTypes.TRAINING_PROGRESS, progress_data)
+                    logger.debug(f"Published TRAINING_PROGRESS for {experiment_id}: {metrics}")
+                except Exception as e:
+                    logger.error(f"Failed to publish TRAINING_PROGRESS: {e}")
+
+    def _auto_generate_video(self, process_info: ProcessInfo):
+        """
+        Automatically generate video after training completes.
+        This runs in a background thread to avoid blocking the UI.
+        """
+        import threading
+
+        def generate_video_thread():
+            try:
+                run_id = process_info.id
+                target_hours = process_info.target_hours
+
+                # Convert target hours to seconds
+                total_seconds = int(target_hours * 3600)
+
+                print(f"[AutoVideo] Generating {target_hours}h video...")
+
+                # Phase 1: Publish VIDEO_GENERATION_STARTED event
+                experiment_id = self._experiment_map.get(run_id)
+                if experiment_id:
+                    self.event_bus.publish(EventTypes.VIDEO_GENERATION_STARTED, {
+                        'experiment_id': experiment_id,
+                        'run_id': run_id,
+                        'target_duration': total_seconds
+                    })
+                    logger.debug(f"Video generation started for experiment {experiment_id}")
+
+                # Get checkpoint directory
+                checkpoint_dir = self.project_root / "models" / "checkpoints" / run_id / "milestones"
+
+                if not checkpoint_dir.exists():
+                    print(f"[AutoVideo] No checkpoints found at {checkpoint_dir}")
+                    return
+
+                # Get output directory from config or use default
+                config_data = process_info.config_data
+                custom_output_path = config_data.get('paths', {}).get('videos_milestones')
+
+                if custom_output_path:
+                    # Use the parent directory of videos_milestones
+                    output_dir = Path(custom_output_path).parent
+                else:
+                    # Use default video directory
+                    output_dir = self.project_root / "video" / "post_training"
+
+                output_dir.mkdir(parents=True, exist_ok=True)
+
+                # Get config path
+                config_path = self._temp_configs.get(run_id)
+                if not config_path or not Path(config_path).exists():
+                    config_path = str(self.project_root / "conf" / "config.yaml")
+
+                # Generate the video
+                success = generate_post_training_videos(
+                    config_path=config_path,
+                    model_dir=str(checkpoint_dir),
+                    output_dir=str(output_dir),
+                    clip_seconds=90,  # Not used when total_seconds is provided
+                    total_seconds=total_seconds,
+                    verbose=1
+                )
+
+                if success:
+                    # Phase 1: Register video artifact and publish event
+                    if experiment_id and self.ml_database:
+                        try:
+                            # Find the generated video file
+                            video_files = list(output_dir.glob("*.mp4"))
+                            if video_files:
+                                video_path = video_files[-1]  # Get the most recent video
+                                video_size_mb = video_path.stat().st_size / (1024 * 1024)
+
+                                # Register video artifact in database
+                                video_id = f"video_{run_id}_{int(time.time())}"
+                                self.ml_database.add_video_artifact(
+                                    video_id=video_id,
+                                    experiment_id=experiment_id,
+                                    path=str(video_path),
+                                    video_type="hour",  # Post-training continuous video
+                                    metadata={
+                                        'duration': total_seconds,
+                                        'size_mb': video_size_mb,
+                                        'target_hours': target_hours
+                                    }
+                                )
+
+                                # Publish VIDEO_GENERATED event
+                                self.event_bus.publish(EventTypes.VIDEO_GENERATED, {
+                                    'experiment_id': experiment_id,
+                                    'run_id': run_id,
+                                    'video_path': str(video_path),
+                                    'video_type': 'hour',
+                                    'duration': total_seconds,
+                                    'size_mb': video_size_mb
+                                })
+
+                                print(f"[AutoVideo] Complete! Video saved and registered in database ({video_size_mb:.1f} MB)")
+                                logger.debug(f"Video artifact registered for experiment {experiment_id}")
+
+                        except Exception as e:
+                            logger.error(f"Failed to register video artifact: {e}")
+                            print(f"[AutoVideo] Complete! (Note: video file created but database registration failed)")
+
+                else:
+                    print(f"[AutoVideo] Failed - check logs for details")
+
+                    # Publish failure event
+                    if experiment_id:
+                        self.event_bus.publish(EventTypes.VIDEO_GENERATION_FAILED, {
+                            'experiment_id': experiment_id,
+                            'run_id': run_id
+                        })
+
+            except Exception as e:
+                print(f"[AutoVideo] Error: {e}")
+                logger.error(f"Video generation error: {e}", exc_info=True)
+
+        # Start video generation in background thread
+        thread = threading.Thread(target=generate_video_thread, daemon=True)
+        thread.start()
 
 def generate_run_id() -> str:
     """Generate a unique run ID."""
@@ -881,73 +1281,6 @@ def get_detailed_gpu_info() -> List[GPUResource]:
             pass  # No GPUs available
 
     return gpu_resources
-
-    def _auto_generate_video(self, process_info: ProcessInfo):
-        """
-        Automatically generate video after training completes.
-        This runs in a background thread to avoid blocking the UI.
-        """
-        import threading
-
-        def generate_video_thread():
-            try:
-                run_id = process_info.id
-                target_hours = process_info.target_hours
-
-                # Convert target hours to seconds
-                total_seconds = int(target_hours * 3600)
-
-                print(f"[AutoVideo] Starting automatic video generation for {run_id}")
-                print(f"[AutoVideo] Target duration: {target_hours}h ({total_seconds}s)")
-
-                # Get checkpoint directory
-                checkpoint_dir = self.project_root / "models" / "checkpoints" / run_id / "milestones"
-
-                if not checkpoint_dir.exists():
-                    print(f"[AutoVideo] No checkpoints found at {checkpoint_dir}")
-                    return
-
-                # Get output directory from config or use default
-                config_data = process_info.config_data
-                custom_output_path = config_data.get('paths', {}).get('videos_milestones')
-
-                if custom_output_path:
-                    # Use the parent directory of videos_milestones
-                    output_dir = Path(custom_output_path).parent
-                else:
-                    # Use default video directory
-                    output_dir = self.project_root / "video" / "post_training"
-
-                output_dir.mkdir(parents=True, exist_ok=True)
-
-                # Get config path
-                config_path = self._temp_configs.get(run_id)
-                if not config_path or not Path(config_path).exists():
-                    config_path = str(self.project_root / "conf" / "config.yaml")
-
-                # Generate the video
-                success = generate_post_training_videos(
-                    config_path=config_path,
-                    model_dir=str(checkpoint_dir),
-                    output_dir=str(output_dir),
-                    clip_seconds=90,  # Not used when total_seconds is provided
-                    total_seconds=total_seconds,
-                    verbose=1
-                )
-
-                if success:
-                    print(f"[AutoVideo] ✅ Video generation complete for {run_id}")
-                else:
-                    print(f"[AutoVideo] ❌ Video generation failed for {run_id}")
-
-            except Exception as e:
-                print(f"[AutoVideo] Error in automatic video generation: {e}")
-                import traceback
-                traceback.print_exc()
-
-        # Start video generation in background thread
-        thread = threading.Thread(target=generate_video_thread, daemon=True)
-        thread.start()
 
 def get_available_cpus() -> List[int]:
     """Get list of available CPU cores (legacy function)."""

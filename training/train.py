@@ -22,6 +22,12 @@ from stable_baselines3.common.logger import configure
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
+# Fix Windows console encoding to support Unicode output
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+
 from conf.config import load_config
 
 # Check for epic-specific configuration

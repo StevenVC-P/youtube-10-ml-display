@@ -328,7 +328,7 @@ class ExperimentManager:
         # Persist to database
         self._save_experiment(experiment)
 
-        logger.info(f"Created experiment {experiment_id}: {name}")
+        logger.debug(f"Created experiment {experiment_id}: {name}")
         return experiment
 
     def get_experiment(self, experiment_id: str) -> Optional[Experiment]:

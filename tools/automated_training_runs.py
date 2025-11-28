@@ -101,7 +101,7 @@ def main():
     # Initialize managers
     db = MetricsDatabase('ml_experiments.db')
     process_manager = ProcessManager(project_root=str(project_root))
-    process_manager.ml_database = db
+    process_manager.set_database(db)  # Phase 1: Initialize Experiment Manager
     
     # Configuration for 5-minute training
     game = 'ALE/SpaceInvaders-v5'  # Use ALE prefix for Atari environments

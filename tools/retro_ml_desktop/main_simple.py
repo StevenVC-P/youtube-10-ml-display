@@ -24,6 +24,13 @@ else:
     project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+# Fix Windows console encoding to support Unicode/emoji characters
+if sys.platform == 'win32':
+    import io
+    # Reconfigure stdout and stderr to use UTF-8 with error handling
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+
 from tools.retro_ml_desktop.monitor import SystemMonitor, SystemMetrics, get_gpu_status_message
 from tools.retro_ml_desktop.process_manager import ProcessManager, ProcessInfo, ResourceLimits, generate_run_id, get_available_cpus, get_available_gpus, get_detailed_cpu_info, get_detailed_gpu_info, get_recommended_resources
 from tools.retro_ml_desktop.resource_selector import ResourceSelectorDialog
@@ -34,6 +41,11 @@ from tools.retro_ml_desktop.ml_database import MetricsDatabase
 from tools.retro_ml_desktop.ml_collector import MetricsCollector
 from tools.retro_ml_desktop.ml_dashboard import MLDashboard
 from tools.retro_ml_desktop.cuda_diagnostics import CUDADiagnostics, create_user_friendly_error_message
+from tools.retro_ml_desktop.widgets import (
+    RecentActivityWidget,
+    LiveProgressWidget,
+    ResourceMonitorWidget
+)
 
 
 class RetroMLSimple:
@@ -51,12 +63,13 @@ class RetroMLSimple:
 
         # Configure logging to show in terminal
         # Set root logger to WARNING to reduce noise
+        # Use UTF-8 encoding to handle emoji characters on Windows
         logging.basicConfig(
             level=logging.WARNING,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.StreamHandler(),  # This will output to terminal
-                logging.FileHandler('ml_dashboard.log')  # Also save to file
+                logging.StreamHandler(sys.stdout),  # stdout now uses UTF-8
+                logging.FileHandler('ml_dashboard.log', encoding='utf-8', errors='replace')
             ]
         )
 
@@ -88,8 +101,8 @@ class RetroMLSimple:
         self.ml_database = MetricsDatabase(db_path)
         self.ml_collector = MetricsCollector(self.ml_database)
 
-        # Connect database to process manager
-        self.process_manager.ml_database = self.ml_database
+        # Connect database to process manager (Phase 1: Use set_database to initialize Experiment Manager)
+        self.process_manager.set_database(self.ml_database)
 
         # Initialize CUDA diagnostics
         self.cuda_diagnostics = CUDADiagnostics()
@@ -339,14 +352,197 @@ class RetroMLSimple:
         scrollbar.pack(side="right", fill="y")
     
     def _setup_ml_dashboard_tab(self):
-        """Setup the comprehensive ML dashboard tab."""
-        # Initialize the ML dashboard
-        self.ml_dashboard = MLDashboard(
-            parent_frame=self.ml_dashboard_tab,
+        """Setup the comprehensive ML dashboard tab with tabbed interface."""
+        # Create tabbed view with Overview, Charts, Metrics, Activity tabs
+        self.dashboard_tabview = ctk.CTkTabview(self.ml_dashboard_tab)
+        self.dashboard_tabview.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Create tabs
+        self.dashboard_tabview.add("Overview")
+        self.dashboard_tabview.add("Charts")
+        self.dashboard_tabview.add("Metrics")
+        self.dashboard_tabview.add("Activity")
+
+        # Get experiment manager
+        experiment_manager = self.process_manager.experiment_manager
+
+        # Setup each tab
+        self._setup_overview_tab(experiment_manager)
+        self._setup_charts_tab()
+        self._setup_metrics_tab()
+        self._setup_activity_tab(experiment_manager)
+
+    def _setup_overview_tab(self, experiment_manager):
+        """Setup Overview tab with collapsible sections."""
+        overview_tab = self.dashboard_tabview.tab("Overview")
+
+        # Container for collapsible sections
+        container = ctk.CTkScrollableFrame(overview_tab)
+        container.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # Collapsible Section 1: Charts
+        self._charts_collapsed = False
+        self._charts_section_frame = self._create_collapsible_section(
+            container,
+            "📊 Charts",
+            lambda: self._toggle_section("charts")
+        )
+
+        # Charts content
+        charts_content = ctk.CTkFrame(self._charts_section_frame)
+        charts_content.pack(fill="both", expand=True, padx=5, pady=5)
+        self._charts_content_frame = charts_content
+
+        self.ml_dashboard_overview = MLDashboard(
+            parent_frame=charts_content,
             database=self.ml_database,
             collector=self.ml_collector,
             process_manager=self.process_manager
         )
+
+        # Collapsible Section 2: Stats (Live Progress + Resource Monitor)
+        self._stats_collapsed = False
+        self._stats_section_frame = self._create_collapsible_section(
+            container,
+            "📈 Stats",
+            lambda: self._toggle_section("stats")
+        )
+
+        # Stats content (side by side)
+        stats_content = ctk.CTkFrame(self._stats_section_frame, height=220)
+        stats_content.pack(fill="x", expand=False, padx=5, pady=5)
+        stats_content.pack_propagate(False)
+        self._stats_content_frame = stats_content
+
+        # Live Progress Widget (left)
+        live_progress_frame = ctk.CTkFrame(stats_content)
+        live_progress_frame.pack(side="left", fill="both", expand=True, padx=(0, 2.5))
+        self.live_progress_widget = LiveProgressWidget(parent=live_progress_frame)
+        self.live_progress_widget.pack(fill="both", expand=True)
+
+        # Resource Monitor Widget (right)
+        resource_monitor_frame = ctk.CTkFrame(stats_content)
+        resource_monitor_frame.pack(side="right", fill="both", expand=True, padx=(2.5, 0))
+        self.resource_monitor_widget = ResourceMonitorWidget(parent=resource_monitor_frame)
+        self.resource_monitor_widget.pack(fill="both", expand=True)
+
+        # Collapsible Section 3: Activity Feed
+        self._activity_collapsed = False
+        self._activity_section_frame = self._create_collapsible_section(
+            container,
+            "🕒 Activity Feed",
+            lambda: self._toggle_section("activity")
+        )
+
+        # Activity content
+        activity_content = ctk.CTkFrame(self._activity_section_frame, height=250)
+        activity_content.pack(fill="x", expand=False, padx=5, pady=5)
+        activity_content.pack_propagate(False)
+        self._activity_content_frame = activity_content
+
+        self.recent_activity_widget_overview = RecentActivityWidget(
+            experiment_manager=experiment_manager,
+            parent=activity_content
+        )
+        self.recent_activity_widget_overview.pack(fill="both", expand=True)
+
+    def _create_collapsible_section(self, parent, title, toggle_callback):
+        """Create a collapsible section with header button."""
+        # Section frame
+        section_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        section_frame.pack(fill="both", expand=True, pady=(0, 10))
+
+        # Header button (clickable to collapse/expand)
+        header_btn = ctk.CTkButton(
+            section_frame,
+            text=f"▼ {title}",
+            command=toggle_callback,
+            fg_color=("gray75", "gray25"),
+            hover_color=("gray70", "gray30"),
+            anchor="w",
+            height=35,
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        header_btn.pack(fill="x", padx=0, pady=(0, 5))
+
+        # Store header button for later updates
+        section_frame._header_btn = header_btn
+
+        return section_frame
+
+    def _toggle_section(self, section_name):
+        """Toggle visibility of a collapsible section."""
+        if section_name == "charts":
+            self._charts_collapsed = not self._charts_collapsed
+            if self._charts_collapsed:
+                self._charts_content_frame.pack_forget()
+                self._charts_section_frame._header_btn.configure(text="▶ 📊 Charts")
+            else:
+                self._charts_content_frame.pack(fill="both", expand=True, padx=5, pady=5)
+                self._charts_section_frame._header_btn.configure(text="▼ 📊 Charts")
+
+        elif section_name == "stats":
+            self._stats_collapsed = not self._stats_collapsed
+            if self._stats_collapsed:
+                self._stats_content_frame.pack_forget()
+                self._stats_section_frame._header_btn.configure(text="▶ 📈 Stats")
+            else:
+                self._stats_content_frame.pack(fill="x", expand=False, padx=5, pady=5)
+                self._stats_section_frame._header_btn.configure(text="▼ 📈 Stats")
+
+        elif section_name == "activity":
+            self._activity_collapsed = not self._activity_collapsed
+            if self._activity_collapsed:
+                self._activity_content_frame.pack_forget()
+                self._activity_section_frame._header_btn.configure(text="▶ 🕒 Activity Feed")
+            else:
+                self._activity_content_frame.pack(fill="x", expand=False, padx=5, pady=5)
+                self._activity_section_frame._header_btn.configure(text="▼ 🕒 Activity Feed")
+
+    def _setup_charts_tab(self):
+        """Setup Charts tab with full-screen charts."""
+        charts_tab = self.dashboard_tabview.tab("Charts")
+
+        # Full-screen ML Dashboard
+        self.ml_dashboard = MLDashboard(
+            parent_frame=charts_tab,
+            database=self.ml_database,
+            collector=self.ml_collector,
+            process_manager=self.process_manager
+        )
+
+    def _setup_metrics_tab(self):
+        """Setup Metrics tab with Live Progress and Resource Monitor."""
+        metrics_tab = self.dashboard_tabview.tab("Metrics")
+
+        # Container for side-by-side layout
+        container = ctk.CTkFrame(metrics_tab, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Live Progress Widget (left side, larger)
+        live_progress_frame = ctk.CTkFrame(container)
+        live_progress_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+
+        self.live_progress_widget_metrics = LiveProgressWidget(parent=live_progress_frame)
+        self.live_progress_widget_metrics.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Resource Monitor Widget (right side, larger)
+        resource_monitor_frame = ctk.CTkFrame(container)
+        resource_monitor_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
+
+        self.resource_monitor_widget_metrics = ResourceMonitorWidget(parent=resource_monitor_frame)
+        self.resource_monitor_widget_metrics.pack(fill="both", expand=True, padx=10, pady=10)
+
+    def _setup_activity_tab(self, experiment_manager):
+        """Setup Activity tab with full-screen Recent Activity widget."""
+        activity_tab = self.dashboard_tabview.tab("Activity")
+
+        # Full-screen Recent Activity Widget
+        self.recent_activity_widget = RecentActivityWidget(
+            experiment_manager=experiment_manager,
+            parent=activity_tab
+        )
+        self.recent_activity_widget.pack(fill="both", expand=True, padx=10, pady=10)
 
     def _setup_videos_tab(self):
         """Setup the video gallery tab for viewing training videos."""
@@ -2315,7 +2511,7 @@ class RetroMLSimple:
 
             # Debug: Print configuration being used
             run_mode = config.get('run_mode', 'new')
-            print(f"🔧 Starting training with config:")
+            print(f"[CONFIG] Starting training with config:")
             print(f"   Mode: {run_mode}")
             print(f"   Game: {config['game']}")
             print(f"   Algorithm: {config['algorithm']}")
