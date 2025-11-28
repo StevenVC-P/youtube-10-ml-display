@@ -216,8 +216,14 @@ def make_vec_env(
         n_envs = config['train']['vec_envs']
     
     if vec_env_cls is None:
-        # Use SubprocVecEnv for better performance with multiple envs
-        vec_env_cls = SubprocVecEnv if n_envs > 1 else DummyVecEnv
+        # Use DummyVecEnv on Windows due to Python 3.13 multiprocessing issues
+        # SubprocVecEnv causes BrokenPipeError with multiple environments
+        import sys
+        if sys.platform == 'win32':
+            vec_env_cls = DummyVecEnv
+        else:
+            # Use SubprocVecEnv for better performance with multiple envs on Unix
+            vec_env_cls = SubprocVecEnv if n_envs > 1 else DummyVecEnv
     
     # Create environment factories
     env_fns = []

@@ -155,6 +155,55 @@ class MetricsDatabase:
                 )
             """)
 
+            # Experiments table (new experiment-centric architecture)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS experiments (
+                    experiment_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    game TEXT NOT NULL,
+                    algorithm TEXT NOT NULL,
+                    preset TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    lineage_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created TEXT NOT NULL,
+                    started TEXT,
+                    completed TEXT,
+                    tags_json TEXT,
+                    notes TEXT,
+                    progress_pct REAL DEFAULT 0.0,
+                    current_timestep INTEGER DEFAULT 0,
+                    elapsed_time REAL DEFAULT 0.0,
+                    estimated_time_remaining REAL DEFAULT 0.0,
+                    latest_metrics_json TEXT,
+                    final_metrics_json TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Video artifacts table (links videos to experiments)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS video_artifacts (
+                    video_id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    duration REAL,
+                    size_mb REAL,
+                    created TEXT NOT NULL,
+                    tags_json TEXT,
+                    metadata_json TEXT,
+                    thumbnail_path TEXT,
+                    avg_score REAL,
+                    max_score REAL,
+                    episode_count INTEGER,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (experiment_id) REFERENCES experiments (experiment_id)
+                )
+            """)
+
             # Create indexes for performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_timestep ON training_metrics(run_id, timestep)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON training_metrics(timestamp)")
@@ -162,6 +211,14 @@ class MetricsDatabase:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_start_time ON experiment_runs(start_time)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_video_progress_status ON video_generation_progress(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_video_progress_run_id ON video_generation_progress(run_id)")
+
+            # Indexes for new tables
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_experiments_created ON experiments(created)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_experiments_game ON experiments(game)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_video_artifacts_experiment_id ON video_artifacts(experiment_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_video_artifacts_type ON video_artifacts(type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_video_artifacts_created ON video_artifacts(created)")
 
             conn.commit()
     
@@ -963,3 +1020,316 @@ class MetricsDatabase:
         except Exception as e:
             print(f"Error cleaning up old video progress: {e}")
             return 0
+
+    # ========== Experiment Management (New) ==========
+
+    def save_experiment(self, experiment_dict: Dict[str, Any]) -> bool:
+        """
+        Save or update an experiment.
+
+        Args:
+            experiment_dict: Dictionary representation of Experiment
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+
+                conn.execute("""
+                    INSERT OR REPLACE INTO experiments (
+                        experiment_id, name, game, algorithm, preset,
+                        config_json, lineage_json, status, created, started,
+                        completed, tags_json, notes, progress_pct,
+                        current_timestep, elapsed_time, estimated_time_remaining,
+                        latest_metrics_json, final_metrics_json, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    experiment_dict['id'],
+                    experiment_dict['name'],
+                    experiment_dict['game'],
+                    experiment_dict['algorithm'],
+                    experiment_dict['preset'],
+                    json.dumps(experiment_dict['config']),
+                    json.dumps(experiment_dict['lineage']),
+                    experiment_dict['status'],
+                    experiment_dict['created'],
+                    experiment_dict.get('started'),
+                    experiment_dict.get('completed'),
+                    json.dumps(experiment_dict.get('tags', [])),
+                    experiment_dict.get('notes', ''),
+                    experiment_dict.get('progress_pct', 0.0),
+                    experiment_dict.get('current_timestep', 0),
+                    experiment_dict.get('elapsed_time', 0.0),
+                    experiment_dict.get('estimated_time_remaining', 0.0),
+                    json.dumps(experiment_dict.get('latest_metrics', {})),
+                    json.dumps(experiment_dict.get('final_metrics', {})),
+                    datetime.now().isoformat()
+                ))
+
+                conn.commit()
+                return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to save experiment: {e}")
+            return False
+
+    def get_experiment(self, experiment_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get experiment by ID.
+
+        Args:
+            experiment_id: Experiment ID
+
+        Returns:
+            Dictionary representation of experiment or None
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                cursor = conn.execute(
+                    "SELECT * FROM experiments WHERE experiment_id = ?",
+                    (experiment_id,)
+                )
+                row = cursor.fetchone()
+
+                if row:
+                    return self._row_to_experiment_dict(row)
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Failed to get experiment: {e}")
+            return None
+
+    def list_experiments(
+        self,
+        status: Optional[str] = None,
+        game: Optional[str] = None,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        List experiments with optional filtering.
+
+        Args:
+            status: Optional status filter
+            game: Optional game filter
+            limit: Maximum number to return
+
+        Returns:
+            List of experiment dictionaries
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+
+                query = "SELECT * FROM experiments WHERE 1=1"
+                params = []
+
+                if status:
+                    query += " AND status = ?"
+                    params.append(status)
+
+                if game:
+                    query += " AND game = ?"
+                    params.append(game)
+
+                query += " ORDER BY created DESC LIMIT ?"
+                params.append(limit)
+
+                cursor = conn.execute(query, params)
+                return [self._row_to_experiment_dict(row) for row in cursor.fetchall()]
+
+        except Exception as e:
+            self.logger.error(f"Failed to list experiments: {e}")
+            return []
+
+    def delete_experiment(self, experiment_id: str) -> bool:
+        """
+        Delete an experiment.
+
+        Args:
+            experiment_id: Experiment ID
+
+        Returns:
+            True if successful
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                conn.execute("DELETE FROM experiments WHERE experiment_id = ?", (experiment_id,))
+                conn.commit()
+                return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to delete experiment: {e}")
+            return False
+
+    def _row_to_experiment_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        """Convert database row to experiment dictionary."""
+        return {
+            'id': row['experiment_id'],
+            'name': row['name'],
+            'game': row['game'],
+            'algorithm': row['algorithm'],
+            'preset': row['preset'],
+            'config': json.loads(row['config_json']),
+            'lineage': json.loads(row['lineage_json']),
+            'status': row['status'],
+            'created': row['created'],
+            'started': row['started'],
+            'completed': row['completed'],
+            'tags': json.loads(row['tags_json']) if row['tags_json'] else [],
+            'notes': row['notes'] or '',
+            'progress_pct': row['progress_pct'],
+            'current_timestep': row['current_timestep'],
+            'elapsed_time': row['elapsed_time'],
+            'estimated_time_remaining': row['estimated_time_remaining'],
+            'latest_metrics': json.loads(row['latest_metrics_json']) if row['latest_metrics_json'] else {},
+            'final_metrics': json.loads(row['final_metrics_json']) if row['final_metrics_json'] else {}
+        }
+
+    # ========== Video Artifact Management (New) ==========
+
+    def add_video_artifact(
+        self,
+        video_id: str,
+        experiment_id: str,
+        path: str,
+        video_type: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Add a video artifact linked to an experiment.
+
+        Args:
+            video_id: Unique video ID
+            experiment_id: Parent experiment ID
+            path: Path to video file
+            video_type: Type ('milestone', 'hour', 'evaluation')
+            metadata: Optional metadata dictionary
+
+        Returns:
+            True if successful
+        """
+        try:
+            from pathlib import Path as PathLib
+            video_path = PathLib(path)
+
+            # Get file size
+            size_mb = video_path.stat().st_size / (1024 * 1024) if video_path.exists() else 0
+
+            # Extract metadata
+            metadata = metadata or {}
+            tags = metadata.get('tags', [])
+            duration = metadata.get('duration')
+            avg_score = metadata.get('avg_score')
+            max_score = metadata.get('max_score')
+            episode_count = metadata.get('episode_count')
+
+            with self._lock:
+                conn = self._get_connection()
+
+                conn.execute("""
+                    INSERT OR REPLACE INTO video_artifacts (
+                        video_id, experiment_id, path, type, duration,
+                        size_mb, created, tags_json, metadata_json,
+                        avg_score, max_score, episode_count, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    video_id,
+                    experiment_id,
+                    str(path),
+                    video_type,
+                    duration,
+                    size_mb,
+                    datetime.now().isoformat(),
+                    json.dumps(tags),
+                    json.dumps(metadata),
+                    avg_score,
+                    max_score,
+                    episode_count,
+                    datetime.now().isoformat()
+                ))
+
+                conn.commit()
+                return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to add video artifact: {e}")
+            return False
+
+    def get_video_artifacts(
+        self,
+        experiment_id: Optional[str] = None,
+        video_type: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Get video artifacts with optional filtering.
+
+        Args:
+            experiment_id: Optional experiment ID filter
+            video_type: Optional type filter
+            limit: Maximum number to return
+
+        Returns:
+            List of video artifact dictionaries
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+
+                query = "SELECT * FROM video_artifacts WHERE 1=1"
+                params = []
+
+                if experiment_id:
+                    query += " AND experiment_id = ?"
+                    params.append(experiment_id)
+
+                if video_type:
+                    query += " AND type = ?"
+                    params.append(video_type)
+
+                query += " ORDER BY created DESC LIMIT ?"
+                params.append(limit)
+
+                cursor = conn.execute(query, params)
+                columns = [desc[0] for desc in cursor.description]
+                videos = []
+
+                for row in cursor.fetchall():
+                    video_dict = dict(zip(columns, row))
+                    # Parse JSON fields
+                    if video_dict.get('tags_json'):
+                        video_dict['tags'] = json.loads(video_dict['tags_json'])
+                    if video_dict.get('metadata_json'):
+                        video_dict['metadata'] = json.loads(video_dict['metadata_json'])
+                    videos.append(video_dict)
+
+                return videos
+
+        except Exception as e:
+            self.logger.error(f"Failed to get video artifacts: {e}")
+            return []
+
+    def delete_video_artifact(self, video_id: str) -> bool:
+        """
+        Delete a video artifact.
+
+        Args:
+            video_id: Video ID
+
+        Returns:
+            True if successful
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                conn.execute("DELETE FROM video_artifacts WHERE video_id = ?", (video_id,))
+                conn.commit()
+                return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to delete video artifact: {e}")
+            return False
