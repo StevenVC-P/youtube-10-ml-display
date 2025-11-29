@@ -22,6 +22,7 @@ from .ml_database import MetricsDatabase
 from .ml_collector import MetricsCollector
 from .ml_metrics import ExperimentRun, TrainingMetrics, MetricsAggregator
 from .ml_plotting import MLPlotter, PlottingControls
+from .process_manager import get_gpu_info_by_id
 
 
 class MLDashboard:
@@ -134,25 +135,27 @@ class MLDashboard:
         tree_container = tk.Frame(tree_frame)
         tree_container.pack(fill="both", expand=True, padx=5, pady=5)
         
-        self.runs_tree = ttk.Treeview(tree_container, 
-                                     columns=("status", "algorithm", "game", "progress", "reward", "duration"),
+        self.runs_tree = ttk.Treeview(tree_container,
+                                     columns=("status", "algorithm", "game", "gpu", "progress", "reward", "duration"),
                                      show="tree headings",
                                      selectmode="extended")
-        
+
         # Configure columns
         self.runs_tree.heading("#0", text="Run ID")
         self.runs_tree.heading("status", text="Status")
         self.runs_tree.heading("algorithm", text="Algorithm")
         self.runs_tree.heading("game", text="Game")
+        self.runs_tree.heading("gpu", text="GPU")
         self.runs_tree.heading("progress", text="Progress")
         self.runs_tree.heading("reward", text="Best Reward")
         self.runs_tree.heading("duration", text="Duration")
-        
+
         # Column widths
         self.runs_tree.column("#0", width=120)
         self.runs_tree.column("status", width=80)
         self.runs_tree.column("algorithm", width=80)
         self.runs_tree.column("game", width=100)
+        self.runs_tree.column("gpu", width=60)
         self.runs_tree.column("progress", width=80)
         self.runs_tree.column("reward", width=80)
         self.runs_tree.column("duration", width=80)
@@ -388,7 +391,14 @@ class MLDashboard:
                 status_icon = self._get_status_icon(run.status)
                 algorithm = run.config.algorithm if run.config else "Unknown"
                 game = run.config.env_id.split('/')[-1] if run.config and run.config.env_id else "Unknown"
-                
+
+                # Get GPU info from process manager
+                gpu_display = "N/A"
+                if self.process_manager and run.run_id in self.process_manager.processes:
+                    process_info = self.process_manager.processes[run.run_id]
+                    if process_info.gpu_id is not None:
+                        gpu_display = f"GPU {process_info.gpu_id}"
+
                 # Get latest metrics for progress
                 logging.debug(f"Getting latest metrics for run: {run.run_id}")
                 latest_metrics = self.database.get_latest_metrics(run.run_id)
@@ -402,15 +412,15 @@ class MLDashboard:
                     progress = "0.0%"
                     reward = "N/A"
                     logging.debug(f"No metrics found for run {run.run_id}")
-                
+
                 # Duration
                 duration = self._format_duration(run.duration)
-                
+
                 # Insert into tree
-                self.runs_tree.insert("", "end", 
+                self.runs_tree.insert("", "end",
                                      text=run.run_id[:12] + "...",
-                                     values=(f"{status_icon} {run.status.title()}", 
-                                            algorithm, game, progress, reward, duration),
+                                     values=(f"{status_icon} {run.status.title()}",
+                                            algorithm, game, gpu_display, progress, reward, duration),
                                      tags=(run.run_id,))
             
             # Update stats
@@ -521,18 +531,18 @@ class MLDashboard:
         try:
             # Get summary stats
             stats = self.database.get_run_summary_stats(run_id)
-            
+
             if not stats:
                 return
-            
+
             # Clear existing metrics
             for widget in self.metrics_grid.winfo_children():
                 widget.destroy()
-            
+
             # Create metric cards
             row = 0
             col = 0
-            
+
             metrics = [
                 ("📊 Current Step", f"{stats['current_timestep']:,}"),
                 ("🎯 Best Reward", f"{stats['reward_stats']['max']:.2f}" if stats['reward_stats'] else "N/A"),
@@ -541,23 +551,42 @@ class MLDashboard:
                 ("📏 Total Metrics", f"{stats['total_metrics']:,}"),
                 ("🎮 Status", stats['status'].title())
             ]
-            
+
+            # Add GPU metrics if available
+            if self.process_manager and run_id in self.process_manager.processes:
+                process_info = self.process_manager.processes[run_id]
+                if process_info.gpu_id is not None:
+                    gpu_info = get_gpu_info_by_id(process_info.gpu_id)
+                    if gpu_info:
+                        # GPU device name and capability
+                        gpu_name_short = gpu_info.name[:20] + "..." if len(gpu_info.name) > 20 else gpu_info.name
+                        gpu_memory_gb = gpu_info.memory_total_mb / 1024
+
+                        metrics.extend([
+                            ("🎮 GPU Device", f"{gpu_name_short}"),
+                            ("💾 GPU Capacity", f"{gpu_memory_gb:.0f} GB"),
+                            ("📍 Using", f"cuda:{gpu_info.gpu_id}"),
+                            ("⚡ GPU Usage", f"{gpu_info.utilization_percent:.0f}%"),
+                            ("💾 VRAM Used", f"{gpu_info.memory_used_mb:.0f} / {gpu_info.memory_total_mb:.0f} MB"),
+                            ("🌡️ GPU Temp", f"{gpu_info.temperature_c:.0f}°C")
+                        ])
+
             for label, value in metrics:
                 metric_frame = ctk.CTkFrame(self.metrics_grid)
                 metric_frame.grid(row=row, column=col, padx=5, pady=5, sticky="ew")
-                
+
                 ctk.CTkLabel(metric_frame, text=label, font=ctk.CTkFont(size=10)).pack()
                 ctk.CTkLabel(metric_frame, text=value, font=ctk.CTkFont(size=14, weight="bold")).pack()
-                
+
                 col += 1
                 if col >= 3:
                     col = 0
                     row += 1
-            
+
             # Configure grid weights
             for i in range(3):
                 self.metrics_grid.grid_columnconfigure(i, weight=1)
-            
+
         except Exception as e:
             self.logger.error(f"Failed to update performance metrics: {e}")
     

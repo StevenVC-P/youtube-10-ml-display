@@ -371,4 +371,13 @@ build_scripts/ffmpeg/bin/*.dll
 
 # Fix scripts
 fix_*.py
+find_*.py
+restart_*.py
+
+# PyInstaller spec files
+*.spec
+
+# Cleanup scripts
+cleanup_*.py
+clean_*.py
 

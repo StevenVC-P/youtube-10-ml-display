@@ -4,7 +4,8 @@ This script will delete:
 - All model checkpoints
 - All training outputs
 - All videos
-- The metrics database
+- The metrics database (metrics.db)
+- The experiment tracking database (ml_experiments.db)
 """
 
 import shutil
@@ -19,6 +20,7 @@ def clean_all():
         project_root / "models" / "checkpoints",
         project_root / "outputs",
         project_root / "metrics.db",
+        project_root / "ml_experiments.db",  # Experiment tracking database
     ]
 
     print("=" * 70)
