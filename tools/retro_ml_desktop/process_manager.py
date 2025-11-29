@@ -39,6 +39,8 @@ class ProcessInfo:
     pid: Optional[int] = None
     process: Optional[subprocess.Popen] = None
     config_data: Optional[Dict] = None
+    gpu_id: Optional[str] = None  # GPU ID assigned to this process
+    error_message: Optional[str] = None  # Error message if process failed
 
 
 @dataclass
@@ -438,7 +440,8 @@ class ProcessManager:
                 created=datetime.now(),
                 pid=process.pid,
                 process=process,
-                config_data=config_data
+                config_data=config_data,
+                gpu_id=resources.gpu_id if resources else None
             )
 
             # Store target_hours for automatic video generation
@@ -1291,6 +1294,18 @@ def get_available_gpus() -> List[str]:
     """Get list of available GPU IDs (legacy function)."""
     gpu_info = get_detailed_gpu_info()
     return [str(gpu.gpu_id) for gpu in gpu_info if gpu.available]
+
+def get_gpu_info_by_id(gpu_id: str) -> Optional[GPUResource]:
+    """Get GPU information for a specific GPU ID."""
+    try:
+        gpu_info = get_detailed_gpu_info()
+        gpu_id_int = int(gpu_id)
+        for gpu in gpu_info:
+            if gpu.gpu_id == gpu_id_int:
+                return gpu
+    except (ValueError, Exception):
+        pass
+    return None
 
 def get_recommended_resources() -> Dict[str, any]:
     """Get recommended resource allocation based on system capabilities."""
