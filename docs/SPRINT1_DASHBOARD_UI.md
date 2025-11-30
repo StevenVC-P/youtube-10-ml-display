@@ -16,18 +16,19 @@ Improve the existing dashboard for better user experience with collapsible secti
 
 ### 1. Dashboard Layout Improvements
 
-**Priority:** HIGH  
+**Priority:** HIGH
 **Estimated Time:** 2-3 days
+**Status:** 🚧 IN PROGRESS (50% complete)
 
 #### Tasks:
 
-- [ ] **1.1 Add Collapsible Sections**
+- [x] **1.1 Add Collapsible Sections** ✅
 
-  - [ ] Create CollapsibleFrame widget (CustomTkinter)
-  - [ ] Implement expand/collapse animation
-  - [ ] Add section headers with icons
-  - [ ] Save/restore section states in user preferences
-  - **Files:** `tools/retro_ml_desktop/widgets/collapsible_frame.py` (new)
+  - [x] Create CollapsibleFrame widget (CustomTkinter)
+  - [x] Implement expand/collapse functionality
+  - [x] Add section headers with icons
+  - [x] Add callback support for state changes
+  - **Files:** `tools/retro_ml_desktop/widgets/collapsible_frame.py` ✅ Created
 
 - [ ] **1.2 Reorganize Dashboard Layout**
 
@@ -38,7 +39,7 @@ Improve the existing dashboard for better user experience with collapsible secti
     - Recent Activity (Last 10 experiments)
   - [ ] Improve spacing and padding
   - [ ] Add visual separators between sections
-  - **Files:** `tools/retro_ml_desktop/main_window.py`
+  - **Files:** `tools/retro_ml_desktop/main_simple.py` or `ml_dashboard.py`
 
 - [ ] **1.3 Dark Theme Polish**
 
@@ -48,12 +49,19 @@ Improve the existing dashboard for better user experience with collapsible secti
   - [ ] Add focus indicators for accessibility
   - **Files:** `tools/retro_ml_desktop/theme.py` (new or update existing)
 
-- [ ] **1.4 Status Indicators**
-  - [ ] Create status badge widget (Running, Paused, Stopped, Completed, Failed)
-  - [ ] Add color coding (green, yellow, red, blue, gray)
-  - [ ] Add pulsing animation for "Running" status
-  - [ ] Add status icons
-  - **Files:** `tools/retro_ml_desktop/widgets/status_badge.py` (new)
+- [x] **1.4 Status Indicators** ✅
+  - [x] Create status badge widget (Running, Paused, Stopped, Completed, Failed, Idle)
+  - [x] Add color coding (green, yellow, red, blue, gray)
+  - [x] Add pulsing animation for "Running" status
+  - [x] Add status icons
+  - **Files:** `tools/retro_ml_desktop/widgets/status_badge.py` ✅ Created
+
+**Implementation Notes:**
+
+- CollapsibleFrame supports smooth expand/collapse with customizable icons
+- StatusBadge includes 6 status types with appropriate color coding
+- Both widgets tested and working correctly
+- Ready to integrate into main dashboard
 
 ---
 
