@@ -196,9 +196,13 @@ class RetroMLSimple:
             fg_color="#17a2b8", hover_color="#138496"
         )
         diagnostics_btn.pack(pady=(5, 20), padx=10, fill="x")
-        
+
+        # Visual separator
+        separator1 = ctk.CTkFrame(sidebar, height=2, fg_color=("gray70", "gray30"))
+        separator1.pack(fill="x", padx=20, pady=10)
+
         # System info
-        ctk.CTkLabel(sidebar, text="System Status:", font=ctk.CTkFont(weight="bold")).pack(pady=(20, 5))
+        ctk.CTkLabel(sidebar, text="System Status:", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
         
         # CPU info
         self.cpu_info_label = ctk.CTkLabel(sidebar, text="CPU: Loading...")
@@ -212,9 +216,13 @@ class RetroMLSimple:
         gpu_status = get_gpu_status_message()
         self.gpu_info_label = ctk.CTkLabel(sidebar, text=f"GPU: {gpu_status}")
         self.gpu_info_label.pack(pady=5, padx=10, anchor="w")
-        
+
+        # Visual separator
+        separator2 = ctk.CTkFrame(sidebar, height=2, fg_color=("gray70", "gray30"))
+        separator2.pack(fill="x", padx=20, pady=15)
+
         # Available resources with detailed info
-        ctk.CTkLabel(sidebar, text="System Resources:", font=ctk.CTkFont(weight="bold")).pack(pady=(20, 5))
+        ctk.CTkLabel(sidebar, text="System Resources:", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 5))
 
         # Get detailed resource information
         cpu_info = get_detailed_cpu_info()
@@ -260,9 +268,13 @@ class RetroMLSimple:
         )
         storage_cleanup_btn.pack(pady=5, padx=10, fill="x")
 
+        # Visual separator
+        separator3 = ctk.CTkFrame(sidebar, height=2, fg_color=("gray70", "gray30"))
+        separator3.pack(fill="x", padx=20, pady=15)
+
         # Training controls info
         controls_frame = ctk.CTkFrame(sidebar)
-        controls_frame.pack(fill="x", padx=10, pady=(20, 5))
+        controls_frame.pack(fill="x", padx=10, pady=(5, 5))
 
         ctk.CTkLabel(controls_frame, text="Training Controls",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(10, 5))
