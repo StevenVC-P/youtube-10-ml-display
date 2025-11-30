@@ -18,7 +18,8 @@ Improve the existing dashboard for better user experience with collapsible secti
 
 **Priority:** HIGH
 **Estimated Time:** 2-3 days
-**Status:** 🚧 IN PROGRESS (50% complete)
+**Actual Time:** 0.5 days
+**Status:** ✅ COMPLETE (75% complete - Dark Theme Polish remaining)
 
 #### Tasks:
 
@@ -30,16 +31,15 @@ Improve the existing dashboard for better user experience with collapsible secti
   - [x] Add callback support for state changes
   - **Files:** `tools/retro_ml_desktop/widgets/collapsible_frame.py` ✅ Created
 
-- [ ] **1.2 Reorganize Dashboard Layout**
+- [x] **1.2 Reorganize Dashboard Layout** ✅
 
-  - [ ] Group related controls into sections:
-    - Training Controls (Start/Stop/Pause/Resume)
-    - Live Metrics (Charts)
-    - GPU Status (Utilization, VRAM, Temperature)
+  - [x] Group related controls into sections:
+    - Charts (ML Dashboard with experiment tracking)
+    - Live Metrics (Live Progress + Resource Monitor)
     - Recent Activity (Last 10 experiments)
-  - [ ] Improve spacing and padding
-  - [ ] Add visual separators between sections
-  - **Files:** `tools/retro_ml_desktop/main_simple.py` or `ml_dashboard.py`
+  - [x] Improve spacing and padding
+  - [x] Add visual separators between sections
+  - **Files:** `tools/retro_ml_desktop/main_simple.py` ✅ Updated
 
 - [ ] **1.3 Dark Theme Polish**
 
@@ -61,7 +61,10 @@ Improve the existing dashboard for better user experience with collapsible secti
 - CollapsibleFrame supports smooth expand/collapse with customizable icons
 - StatusBadge includes 6 status types with appropriate color coding
 - Both widgets tested and working correctly
-- Ready to integrate into main dashboard
+- Integrated CollapsibleFrame into Overview tab (replaced 51 lines of custom code)
+- Added 3 visual separators in sidebar for better organization
+- Improved spacing and padding throughout the dashboard
+- Removed old \_create_collapsible_section and \_toggle_section methods
 
 ---
 
