@@ -1,8 +1,22 @@
 """
 Metric Event Bus - Pub/Sub System for Real-Time Updates
 
-Enables decoupled communication between training processes and UI components.
-Components can subscribe to events and receive updates without tight coupling.
+MIGRATION NOTE: This module now uses retro_ml.MetricEventBus via an adapter layer.
+The adapter provides backward compatibility for string-based event types.
+
+For new code, prefer using retro_ml.MetricEventBus directly:
+    from retro_ml import MetricEventBus, MetricEvent, EventType
+
+    bus = MetricEventBus()
+    bus.subscribe(EventType.TRAINING_STEP, callback)
+    bus.emit(MetricEvent(...))
+
+For existing code, this module provides backward compatibility:
+    from tools.retro_ml_desktop.metric_event_bus import get_event_bus
+
+    bus = get_event_bus()
+    bus.subscribe('training.progress', callback)  # String-based (deprecated)
+    bus.publish('training.progress', {...})
 
 Usage:
     # Publisher (Process Manager)
@@ -19,15 +33,24 @@ Usage:
     event_bus.subscribe('training.progress', on_progress)
 """
 
-import threading
-from typing import Dict, List, Callable, Any
-from datetime import datetime
 import logging
+import threading
+from typing import Optional, Dict, List, Callable, Any
+
+# Import adapter that wraps retro_ml.MetricEventBus
+from tools.retro_ml_desktop.retro_ml_adapter import (
+    MetricEventBusAdapter,
+    get_event_bus as get_adapter_event_bus
+)
 
 logger = logging.getLogger(__name__)
 
+# Re-export adapter as MetricEventBus for backward compatibility
+MetricEventBus = MetricEventBusAdapter
 
-class MetricEventBus:
+
+# Legacy class kept for reference (DEPRECATED - DO NOT USE)
+class _LegacyMetricEventBus:
     """
     Pub/Sub event bus for real-time metric and status updates.
 
@@ -297,3 +320,35 @@ experiment.status.changed:
     'message': str (optional)
 }
 """
+
+
+
+def get_event_bus() -> MetricEventBusAdapter:
+    """
+    Get the singleton event bus instance (backward compatible).
+
+    This function now returns a MetricEventBusAdapter that wraps
+    retro_ml.MetricEventBus for backward compatibility.
+
+    Returns:
+        MetricEventBusAdapter instance
+    """
+    return get_adapter_event_bus()
+
+
+# Event type constants for backward compatibility
+class EventTypes:
+    """String constants for event types (DEPRECATED - use retro_ml.EventType instead)."""
+    TRAINING_STARTED = 'training.started'
+    TRAINING_PROGRESS = 'training.progress'
+    TRAINING_STEP = 'training.step'
+    TRAINING_EPISODE = 'training.episode'
+    TRAINING_COMPLETE = 'training.complete'
+    TRAINING_CHECKPOINT = 'training.checkpoint'
+    TRAINING_ERROR = 'training.error'
+    TRAINING_FAILED = 'training.failed'  # Maps to EventType.ERROR
+    TRAINING_STOPPED = 'training.stopped'  # Maps to EventType.RUN_COMPLETED
+    TRAINING_PAUSED = 'training.paused'  # Maps to EventType.TRAINING_STEP
+    TRAINING_RESUMED = 'training.resumed'  # Maps to EventType.TRAINING_STEP
+    VIDEO_GENERATED = 'video.generated'
+    EXPERIMENT_STATUS_CHANGED = 'experiment.status.changed'

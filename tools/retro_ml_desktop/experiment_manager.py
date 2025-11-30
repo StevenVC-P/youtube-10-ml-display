@@ -4,7 +4,13 @@ Experiment Manager - CRUD Operations for ML Experiments
 Manages the full lifecycle of training experiments from creation to completion.
 Provides experiment-centric architecture with lineage tracking and artifact management.
 
+MIGRATION NOTE: This module now uses retro_ml.ExperimentConfig instead of the old
+local ExperimentConfig dataclass. The ExperimentConfig class has been moved to the
+retro_ml package and is now a Pydantic model with validation.
+
 Usage:
+    from retro_ml import ExperimentConfig
+
     manager = ExperimentManager(database)
 
     # Create new experiment
@@ -29,111 +35,10 @@ from pathlib import Path
 import json
 import logging
 
+# Import ExperimentConfig from retro_ml package
+from retro_ml import ExperimentConfig
+
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ExperimentConfig:
-    """Full hyperparameter configuration for an experiment."""
-
-    # Core training parameters
-    algorithm: str  # 'PPO' or 'DQN'
-    total_timesteps: int
-    learning_rate: float
-    n_steps: int  # PPO: steps per update
-    batch_size: int
-    gamma: float  # Discount factor
-    gae_lambda: float  # PPO: GAE lambda
-    ent_coef: float  # Entropy coefficient
-    vf_coef: float  # Value function coefficient
-    max_grad_norm: float
-
-    # Video generation
-    video_length_hours: float
-    milestone_percentages: List[int] = field(default_factory=lambda: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
-    clip_seconds: int = 90  # Length of milestone clips
-
-    # Environment
-    n_envs: int = 8  # Number of parallel environments
-    frame_stack: int = 4
-
-    # Model architecture
-    policy: str = "CnnPolicy"
-    net_arch: Optional[List] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert config to dictionary."""
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ExperimentConfig':
-        """Create config from dictionary."""
-        return cls(**data)
-
-    @classmethod
-    def from_preset(cls, preset: str, video_length_hours: float = 4.0) -> 'ExperimentConfig':
-        """
-        Create config from preset name.
-
-        Args:
-            preset: 'quick' (30m), 'standard' (1-4h), 'epic' (10h)
-            video_length_hours: Target video length
-
-        Returns:
-            ExperimentConfig instance
-        """
-        # Calculate timesteps based on video length
-        # Assuming ~30 FPS, 8 envs, and want real-time video
-        seconds = video_length_hours * 3600
-        timesteps = int(seconds * 30 * 8)  # FPS * envs
-
-        if preset == "quick":
-            return cls(
-                algorithm="PPO",
-                total_timesteps=min(timesteps, 1_000_000),  # Cap at 1M for quick
-                learning_rate=3e-4,
-                n_steps=128,
-                batch_size=256,
-                gamma=0.99,
-                gae_lambda=0.95,
-                ent_coef=0.01,
-                vf_coef=0.5,
-                max_grad_norm=0.5,
-                video_length_hours=video_length_hours,
-                n_envs=8
-            )
-        elif preset == "standard":
-            return cls(
-                algorithm="PPO",
-                total_timesteps=timesteps,
-                learning_rate=2.5e-4,
-                n_steps=128,
-                batch_size=256,
-                gamma=0.99,
-                gae_lambda=0.95,
-                ent_coef=0.01,
-                vf_coef=0.5,
-                max_grad_norm=0.5,
-                video_length_hours=video_length_hours,
-                n_envs=8
-            )
-        elif preset == "epic":
-            return cls(
-                algorithm="PPO",
-                total_timesteps=timesteps,
-                learning_rate=2.5e-4,
-                n_steps=128,
-                batch_size=256,
-                gamma=0.99,
-                gae_lambda=0.95,
-                ent_coef=0.01,
-                vf_coef=0.5,
-                max_grad_norm=0.5,
-                video_length_hours=video_length_hours,
-                n_envs=8
-            )
-        else:
-            raise ValueError(f"Unknown preset: {preset}")
 
 
 @dataclass
@@ -195,7 +100,7 @@ class Experiment:
             'game': self.game,
             'algorithm': self.algorithm,
             'preset': self.preset,
-            'config': self.config.to_dict(),
+            'config': self.config.model_dump(mode='json'),  # Pydantic v2 method with JSON serialization
             'lineage': self.lineage.to_dict(),
             'status': self.status,
             'created': self.created.isoformat(),
@@ -214,8 +119,13 @@ class Experiment:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Experiment':
         """Create experiment from dictionary."""
-        # Parse config
-        config = ExperimentConfig.from_dict(data['config'])
+        # Parse config using Pydantic model_validate
+        # Handle old configs that don't have game_id by adding it from the experiment's game field
+        config_data = data['config'].copy()
+        if 'game_id' not in config_data and 'game' in data:
+            config_data['game_id'] = data['game']
+
+        config = ExperimentConfig.model_validate(config_data)
 
         # Parse lineage
         lineage = ExperimentLineage.from_dict(data['lineage'])
@@ -298,9 +208,13 @@ class ExperimentManager:
         from tools.retro_ml_desktop.process_manager import generate_run_id
         experiment_id = generate_run_id()
 
-        # Create config from preset
-        config = ExperimentConfig.from_preset(preset, video_length_hours)
-        config.algorithm = algorithm
+        # Create config from preset using new retro_ml.ExperimentConfig
+        config = ExperimentConfig.from_preset(
+            game_id=game,
+            preset=preset,
+            video_length_hours=video_length_hours,
+            algorithm=algorithm
+        )
 
         # Create lineage
         lineage = ExperimentLineage()
