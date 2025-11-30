@@ -44,7 +44,9 @@ from tools.retro_ml_desktop.cuda_diagnostics import CUDADiagnostics, create_user
 from tools.retro_ml_desktop.widgets import (
     RecentActivityWidget,
     LiveProgressWidget,
-    ResourceMonitorWidget
+    ResourceMonitorWidget,
+    CollapsibleFrame,
+    StatusBadge
 )
 
 
@@ -373,26 +375,25 @@ class RetroMLSimple:
         self._setup_activity_tab(experiment_manager)
 
     def _setup_overview_tab(self, experiment_manager):
-        """Setup Overview tab with collapsible sections."""
+        """Setup Overview tab with collapsible sections using new CollapsibleFrame widget."""
         overview_tab = self.dashboard_tabview.tab("Overview")
 
         # Container for collapsible sections
         container = ctk.CTkScrollableFrame(overview_tab)
         container.pack(fill="both", expand=True, padx=5, pady=5)
 
-        # Collapsible Section 1: Charts
-        self._charts_collapsed = False
-        self._charts_section_frame = self._create_collapsible_section(
+        # Section 1: Charts (using new CollapsibleFrame)
+        charts_section = CollapsibleFrame(
             container,
-            "📊 Charts",
-            lambda: self._toggle_section("charts")
+            title="Charts",
+            icon="📊",
+            collapsed_icon="📊",
+            initially_collapsed=False
         )
+        charts_section.pack(fill="both", expand=True, pady=(0, 10))
 
         # Charts content
-        charts_content = ctk.CTkFrame(self._charts_section_frame)
-        charts_content.pack(fill="both", expand=True, padx=5, pady=5)
-        self._charts_content_frame = charts_content
-
+        charts_content = charts_section.get_content_frame()
         self.ml_dashboard_overview = MLDashboard(
             parent_frame=charts_content,
             database=self.ml_database,
@@ -400,104 +401,53 @@ class RetroMLSimple:
             process_manager=self.process_manager
         )
 
-        # Collapsible Section 2: Stats (Live Progress + Resource Monitor)
-        self._stats_collapsed = False
-        self._stats_section_frame = self._create_collapsible_section(
+        # Section 2: Live Metrics (Live Progress + Resource Monitor)
+        metrics_section = CollapsibleFrame(
             container,
-            "📈 Stats",
-            lambda: self._toggle_section("stats")
+            title="Live Metrics",
+            icon="📈",
+            collapsed_icon="📈",
+            initially_collapsed=False
         )
+        metrics_section.pack(fill="both", expand=False, pady=(0, 10))
 
-        # Stats content (side by side)
-        stats_content = ctk.CTkFrame(self._stats_section_frame, height=220)
-        stats_content.pack(fill="x", expand=False, padx=5, pady=5)
-        stats_content.pack_propagate(False)
-        self._stats_content_frame = stats_content
+        # Metrics content (side by side)
+        metrics_content = metrics_section.get_content_frame()
+        metrics_content.configure(height=220)
+        metrics_content.pack_propagate(False)
 
         # Live Progress Widget (left)
-        live_progress_frame = ctk.CTkFrame(stats_content)
+        live_progress_frame = ctk.CTkFrame(metrics_content)
         live_progress_frame.pack(side="left", fill="both", expand=True, padx=(0, 2.5))
         self.live_progress_widget = LiveProgressWidget(parent=live_progress_frame)
         self.live_progress_widget.pack(fill="both", expand=True)
 
         # Resource Monitor Widget (right)
-        resource_monitor_frame = ctk.CTkFrame(stats_content)
+        resource_monitor_frame = ctk.CTkFrame(metrics_content)
         resource_monitor_frame.pack(side="right", fill="both", expand=True, padx=(2.5, 0))
         self.resource_monitor_widget = ResourceMonitorWidget(parent=resource_monitor_frame)
         self.resource_monitor_widget.pack(fill="both", expand=True)
 
-        # Collapsible Section 3: Activity Feed
-        self._activity_collapsed = False
-        self._activity_section_frame = self._create_collapsible_section(
+        # Section 3: Recent Activity
+        activity_section = CollapsibleFrame(
             container,
-            "🕒 Activity Feed",
-            lambda: self._toggle_section("activity")
+            title="Recent Activity",
+            icon="🕒",
+            collapsed_icon="🕒",
+            initially_collapsed=False
         )
+        activity_section.pack(fill="both", expand=False, pady=(0, 10))
 
         # Activity content
-        activity_content = ctk.CTkFrame(self._activity_section_frame, height=250)
-        activity_content.pack(fill="x", expand=False, padx=5, pady=5)
+        activity_content = activity_section.get_content_frame()
+        activity_content.configure(height=250)
         activity_content.pack_propagate(False)
-        self._activity_content_frame = activity_content
 
         self.recent_activity_widget_overview = RecentActivityWidget(
             experiment_manager=experiment_manager,
             parent=activity_content
         )
         self.recent_activity_widget_overview.pack(fill="both", expand=True)
-
-    def _create_collapsible_section(self, parent, title, toggle_callback):
-        """Create a collapsible section with header button."""
-        # Section frame
-        section_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        section_frame.pack(fill="both", expand=True, pady=(0, 10))
-
-        # Header button (clickable to collapse/expand)
-        header_btn = ctk.CTkButton(
-            section_frame,
-            text=f"▼ {title}",
-            command=toggle_callback,
-            fg_color=("gray75", "gray25"),
-            hover_color=("gray70", "gray30"),
-            anchor="w",
-            height=35,
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        header_btn.pack(fill="x", padx=0, pady=(0, 5))
-
-        # Store header button for later updates
-        section_frame._header_btn = header_btn
-
-        return section_frame
-
-    def _toggle_section(self, section_name):
-        """Toggle visibility of a collapsible section."""
-        if section_name == "charts":
-            self._charts_collapsed = not self._charts_collapsed
-            if self._charts_collapsed:
-                self._charts_content_frame.pack_forget()
-                self._charts_section_frame._header_btn.configure(text="▶ 📊 Charts")
-            else:
-                self._charts_content_frame.pack(fill="both", expand=True, padx=5, pady=5)
-                self._charts_section_frame._header_btn.configure(text="▼ 📊 Charts")
-
-        elif section_name == "stats":
-            self._stats_collapsed = not self._stats_collapsed
-            if self._stats_collapsed:
-                self._stats_content_frame.pack_forget()
-                self._stats_section_frame._header_btn.configure(text="▶ 📈 Stats")
-            else:
-                self._stats_content_frame.pack(fill="x", expand=False, padx=5, pady=5)
-                self._stats_section_frame._header_btn.configure(text="▼ 📈 Stats")
-
-        elif section_name == "activity":
-            self._activity_collapsed = not self._activity_collapsed
-            if self._activity_collapsed:
-                self._activity_content_frame.pack_forget()
-                self._activity_section_frame._header_btn.configure(text="▶ 🕒 Activity Feed")
-            else:
-                self._activity_content_frame.pack(fill="x", expand=False, padx=5, pady=5)
-                self._activity_section_frame._header_btn.configure(text="▼ 🕒 Activity Feed")
 
     def _setup_charts_tab(self):
         """Setup Charts tab with full-screen charts."""
