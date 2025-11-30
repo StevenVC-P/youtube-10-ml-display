@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 from tools.retro_ml_desktop.experiment_manager import Experiment, ExperimentManager
+from tools.retro_ml_desktop.ml_database import MetricsDatabase
 from retro_ml.core.experiments.config import ExperimentConfig
 
 
@@ -25,7 +26,8 @@ class TestExperimentFlow:
     @pytest.fixture
     def experiment_manager(self, temp_db_path):
         """Create an experiment manager with temporary database."""
-        return ExperimentManager(db_path=str(temp_db_path))
+        database = MetricsDatabase(db_path=str(temp_db_path))
+        return ExperimentManager(database=database)
     
     def test_create_experiment_from_config(self, experiment_manager):
         """Test creating an experiment from ExperimentConfig."""
