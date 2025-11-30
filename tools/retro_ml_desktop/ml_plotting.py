@@ -443,19 +443,19 @@ class MLPlotter:
                     ax.set_xlim(0, max_timestep * 1.05)  # Add 5% padding
 
             # Set Y-axis limits for each plot - always start from appropriate minimum
-            if all_rewards:
+            if all_rewards and 'reward' in self.axes:
                 min_reward = min(0, min(all_rewards))  # Start from 0 or lowest reward
                 max_reward = max(all_rewards)
                 self.axes['reward'].set_ylim(min_reward, max_reward * 1.1)
 
-            if all_losses:
+            if all_losses and 'loss' in self.axes:
                 self.axes['loss'].set_ylim(0, max(all_losses) * 1.1)  # Losses start from 0
 
-            if all_fps or all_cpu:
+            if (all_fps or all_cpu) and 'system' in self.axes:
                 max_system = max((max(all_fps) if all_fps else 0), (max(all_cpu) if all_cpu else 0))
                 self.axes['system'].set_ylim(0, max_system * 1.1)  # System metrics start from 0
 
-            if all_lr or all_kl:
+            if (all_lr or all_kl) and 'learning' in self.axes:
                 max_learning = max((max(all_lr) if all_lr else 0), (max(all_kl) if all_kl else 0))
                 self.axes['learning'].set_ylim(0, max_learning * 1.1)  # Learning metrics start from 0
 
