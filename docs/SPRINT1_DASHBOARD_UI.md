@@ -20,7 +20,9 @@ Improve the existing dashboard for better user experience with collapsible secti
 **Estimated Time:** 2-3 days
 
 #### Tasks:
+
 - [ ] **1.1 Add Collapsible Sections**
+
   - [ ] Create CollapsibleFrame widget (CustomTkinter)
   - [ ] Implement expand/collapse animation
   - [ ] Add section headers with icons
@@ -28,6 +30,7 @@ Improve the existing dashboard for better user experience with collapsible secti
   - **Files:** `tools/retro_ml_desktop/widgets/collapsible_frame.py` (new)
 
 - [ ] **1.2 Reorganize Dashboard Layout**
+
   - [ ] Group related controls into sections:
     - Training Controls (Start/Stop/Pause/Resume)
     - Live Metrics (Charts)
@@ -38,6 +41,7 @@ Improve the existing dashboard for better user experience with collapsible secti
   - **Files:** `tools/retro_ml_desktop/main_window.py`
 
 - [ ] **1.3 Dark Theme Polish**
+
   - [ ] Audit all colors for consistency
   - [ ] Improve contrast for better readability
   - [ ] Add hover states for interactive elements
@@ -59,7 +63,9 @@ Improve the existing dashboard for better user experience with collapsible secti
 **Estimated Time:** 3-4 days
 
 #### Tasks:
+
 - [ ] **2.1 Improve Chart Performance**
+
   - [ ] Profile current chart rendering performance
   - [ ] Implement data downsampling for large datasets (> 1000 points)
   - [ ] Use line simplification algorithms (Douglas-Peucker)
@@ -68,6 +74,7 @@ Improve the existing dashboard for better user experience with collapsible secti
   - **Files:** `tools/retro_ml_desktop/ml_plotting.py`
 
 - [ ] **2.2 Add Chart Legends and Tooltips**
+
   - [ ] Improve legend positioning (draggable, auto-hide)
   - [ ] Add interactive tooltips on hover (show exact values)
   - [ ] Add crosshair cursor for precise reading
@@ -75,6 +82,7 @@ Improve the existing dashboard for better user experience with collapsible secti
   - **Files:** `tools/retro_ml_desktop/ml_plotting.py`
 
 - [ ] **2.3 Add Zoom/Pan Controls**
+
   - [ ] Enable matplotlib navigation toolbar
   - [ ] Add custom zoom buttons (Zoom In, Zoom Out, Reset)
   - [ ] Add pan mode toggle
@@ -92,43 +100,57 @@ Improve the existing dashboard for better user experience with collapsible secti
 
 ---
 
-### 3. GPU Status Display
+### 3. GPU Status Display ✅ COMPLETE
 
-**Priority:** HIGH  
+**Priority:** HIGH
 **Estimated Time:** 2-3 days
+**Actual Time:** 1 day
+**Status:** ✅ Complete (2025-11-30)
 
 #### Tasks:
-- [ ] **3.1 GPU Detection and Info**
-  - [ ] Detect GPU name and model
-  - [ ] Detect VRAM capacity (total)
-  - [ ] Detect CUDA version
-  - [ ] Detect driver version
-  - [ ] Handle multiple GPUs (show all, highlight active)
-  - **Files:** `tools/retro_ml_desktop/gpu_monitor.py` (new)
 
-- [ ] **3.2 Real-Time GPU Metrics**
-  - [ ] Show GPU utilization % (update every 1 second)
-  - [ ] Show VRAM usage (Used/Total in GB)
-  - [ ] Show GPU temperature (°C)
-  - [ ] Show GPU power usage (W) if available
-  - [ ] Show GPU clock speed (MHz) if available
-  - **Files:** `tools/retro_ml_desktop/gpu_monitor.py`
+- [x] **3.1 GPU Detection and Info** ✅
 
-- [ ] **3.3 GPU Status Widget**
-  - [ ] Create GPU status card widget
-  - [ ] Add progress bars for utilization and VRAM
-  - [ ] Add color coding (green < 70%, yellow 70-90%, red > 90%)
-  - [ ] Add warning indicators for high temp (> 80°C)
-  - [ ] Add "No GPU Detected" fallback message
-  - **Files:** `tools/retro_ml_desktop/widgets/gpu_status_card.py` (new)
+  - [x] Detect GPU name and model
+  - [x] Detect VRAM capacity (total)
+  - [x] Detect CUDA capability
+  - [x] Handle no GPU gracefully
+  - **Files:** `tools/retro_ml_desktop/gpu_monitor.py` ✅ Created
 
-- [ ] **3.4 GPU Monitoring Thread**
-  - [ ] Create background thread for GPU monitoring
-  - [ ] Update metrics every 1 second
-  - [ ] Publish metrics to event bus
-  - [ ] Handle GPU disconnection gracefully
-  - [ ] Stop thread when application closes
-  - **Files:** `tools/retro_ml_desktop/gpu_monitor.py`
+- [x] **3.2 Real-Time GPU Metrics** ✅
+
+  - [x] Show GPU utilization % (update every 1 second)
+  - [x] Show VRAM usage (Used/Total in GB)
+  - [x] Show GPU temperature (°C)
+  - [x] Show GPU power usage (W) if available
+  - [x] Show GPU clock speed (MHz) if available
+  - **Files:** `tools/retro_ml_desktop/gpu_monitor.py` ✅ Complete
+
+- [x] **3.3 GPU Status Widget** ✅
+
+  - [x] Updated existing resource_monitor_widget.py
+  - [x] Add progress bars for utilization and VRAM
+  - [x] Add color coding (green < 70%, yellow 70-90%, red > 90%)
+  - [x] Add temperature and power display
+  - [x] Add "No GPU Detected" fallback message
+  - **Files:** `tools/retro_ml_desktop/widgets/resource_monitor_widget.py` ✅ Updated
+
+- [x] **3.4 GPU Monitoring Thread** ✅
+  - [x] Create background thread for GPU monitoring
+  - [x] Update metrics every 1 second
+  - [x] Callback system for metrics updates
+  - [x] Handle GPU disconnection gracefully
+  - [x] Stop thread when application closes
+  - **Files:** `tools/retro_ml_desktop/gpu_monitor.py` ✅ Complete
+
+**Implementation Notes:**
+
+- Used PyTorch's built-in `torch.cuda` functions (wraps pynvml)
+- No additional dependencies needed
+- Singleton pattern for global GPU monitor instance
+- Event-driven updates via callback system
+- Graceful degradation when GPU not available
+- Tested with CPU-only PyTorch (graceful handling confirmed)
 
 ---
 
@@ -138,7 +160,9 @@ Improve the existing dashboard for better user experience with collapsible secti
 **Estimated Time:** 2-3 days
 
 #### Tasks:
+
 - [ ] **4.1 Activity Feed Widget**
+
   - [ ] Create scrollable activity feed widget
   - [ ] Show last 10 experiments
   - [ ] Display: name, game, status, start time, duration
@@ -147,6 +171,7 @@ Improve the existing dashboard for better user experience with collapsible secti
   - **Files:** `tools/retro_ml_desktop/widgets/activity_feed.py` (new)
 
 - [ ] **4.2 Quick Actions**
+
   - [ ] Add "View Details" button (opens experiment details)
   - [ ] Add "Resume" button (for paused/stopped experiments)
   - [ ] Add "Delete" button (with confirmation)
@@ -155,6 +180,7 @@ Improve the existing dashboard for better user experience with collapsible secti
   - **Files:** `tools/retro_ml_desktop/widgets/activity_feed.py`
 
 - [ ] **4.3 Timestamps and Duration**
+
   - [ ] Show relative timestamps ("2 hours ago", "Yesterday")
   - [ ] Show absolute timestamps on hover
   - [ ] Show duration (HH:MM:SS format)
@@ -202,4 +228,3 @@ Improve the existing dashboard for better user experience with collapsible secti
 - Implement **graceful degradation** - if GPU monitoring fails, show fallback message
 - Add **error handling** for all user actions
 - Test on **multiple GPU models** (if available)
-
