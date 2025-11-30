@@ -48,6 +48,7 @@ from tools.retro_ml_desktop.widgets import (
     CollapsibleFrame,
     StatusBadge
 )
+from tools.retro_ml_desktop.theme import Theme
 
 
 class RetroMLSimple:
@@ -193,12 +194,12 @@ class RetroMLSimple:
         diagnostics_btn = ctk.CTkButton(
             sidebar, text="🔍 CUDA Diagnostics", font=ctk.CTkFont(size=12),
             height=35, command=self._show_cuda_diagnostics,
-            fg_color="#17a2b8", hover_color="#138496"
+            **Theme.get_button_colors("info")
         )
         diagnostics_btn.pack(pady=(5, 20), padx=10, fill="x")
 
         # Visual separator
-        separator1 = ctk.CTkFrame(sidebar, height=2, fg_color=("gray70", "gray30"))
+        separator1 = ctk.CTkFrame(sidebar, height=2, fg_color=Theme.SEPARATOR)
         separator1.pack(fill="x", padx=20, pady=10)
 
         # System info
@@ -218,7 +219,7 @@ class RetroMLSimple:
         self.gpu_info_label.pack(pady=5, padx=10, anchor="w")
 
         # Visual separator
-        separator2 = ctk.CTkFrame(sidebar, height=2, fg_color=("gray70", "gray30"))
+        separator2 = ctk.CTkFrame(sidebar, height=2, fg_color=Theme.SEPARATOR)
         separator2.pack(fill="x", padx=20, pady=15)
 
         # Available resources with detailed info
@@ -263,13 +264,12 @@ class RetroMLSimple:
             command=self._show_storage_cleanup,
             font=ctk.CTkFont(size=12),
             height=30,
-            fg_color="#dc3545",
-            hover_color="#c82333"
+            **Theme.get_button_colors("danger")
         )
         storage_cleanup_btn.pack(pady=5, padx=10, fill="x")
 
         # Visual separator
-        separator3 = ctk.CTkFrame(sidebar, height=2, fg_color=("gray70", "gray30"))
+        separator3 = ctk.CTkFrame(sidebar, height=2, fg_color=Theme.SEPARATOR)
         separator3.pack(fill="x", padx=20, pady=15)
 
         # Training controls info
@@ -318,15 +318,15 @@ class RetroMLSimple:
         refresh_btn.pack(side="left", padx=5, pady=5)
 
         stop_btn = ctk.CTkButton(controls_frame, text="🛑 Stop Selected", command=self._stop_selected_process,
-                                fg_color="#dc3545", hover_color="#c82333")
+                                **Theme.get_button_colors("danger"))
         stop_btn.pack(side="left", padx=5)
 
         pause_btn = ctk.CTkButton(controls_frame, text="⏸️ Pause Selected", command=self._pause_selected_process,
-                                 fg_color="#ffc107", hover_color="#e0a800", text_color="black")
+                                 **Theme.get_button_colors("warning"))
         pause_btn.pack(side="left", padx=5)
 
         resume_btn = ctk.CTkButton(controls_frame, text="▶️ Resume Selected", command=self._resume_selected_process,
-                                  fg_color="#28a745", hover_color="#218838")
+                                  **Theme.get_button_colors("success"))
         resume_btn.pack(side="left", padx=5)
 
         remove_btn = ctk.CTkButton(controls_frame, text="Remove Selected", command=self._remove_selected_process)
@@ -337,11 +337,11 @@ class RetroMLSimple:
         clear_frame.pack(fill="x", padx=10, pady=5)
 
         clear_selected_btn = ctk.CTkButton(clear_frame, text="Clear Selected Data",
-                                         command=self._clear_selected_data, fg_color="orange")
+                                         command=self._clear_selected_data, **Theme.get_button_colors("warning"))
         clear_selected_btn.pack(side="left", padx=5)
 
         clear_all_btn = ctk.CTkButton(clear_frame, text="Clear ALL Training Data",
-                                    command=self._clear_all_data, fg_color="red")
+                                    command=self._clear_all_data, **Theme.get_button_colors("danger"))
         clear_all_btn.pack(side="left", padx=5)
         
         # Process list (using tkinter Treeview for table)
@@ -529,7 +529,7 @@ class RetroMLSimple:
         # Generate videos button (NEW!)
         generate_videos_btn = ctk.CTkButton(controls_frame, text="🎥 Generate Videos from Training",
                                            command=self._generate_videos_dialog,
-                                           fg_color="#007bff", hover_color="#0056b3")
+                                           **Theme.get_button_colors("primary"))
         generate_videos_btn.pack(side="left", padx=5, pady=5)
 
         # Open video folder button
@@ -584,7 +584,7 @@ class RetroMLSimple:
         action_frame.pack(fill="x", padx=10, pady=5)
 
         play_btn = ctk.CTkButton(action_frame, text="▶️ Play Video", command=self._play_selected_video,
-                                fg_color="#28a745", hover_color="#218838")
+                                **Theme.get_button_colors("success"))
         play_btn.pack(side="left", padx=5, pady=5)
 
         player_btn = ctk.CTkButton(action_frame, text="🎬 Video Player", command=self._open_video_player)
@@ -597,7 +597,7 @@ class RetroMLSimple:
         info_btn.pack(side="left", padx=5, pady=5)
 
         delete_btn = ctk.CTkButton(action_frame, text="🗑️ Delete Video", command=self._delete_selected_video,
-                                  fg_color="#dc3545", hover_color="#c82333")
+                                  **Theme.get_button_colors("danger"))
         delete_btn.pack(side="right", padx=5, pady=5)
 
         # Auto-refresh videos when tab is opened
@@ -663,10 +663,9 @@ class RetroMLSimple:
         self.install_roms_btn = ctk.CTkButton(rom_section,
                                              text=button_text,
                                              command=self._install_roms_from_settings,
-                                             fg_color="#007bff",
-                                             hover_color="#0056b3",
                                              height=40,
-                                             font=ctk.CTkFont(size=14))
+                                             font=ctk.CTkFont(size=14),
+                                             **Theme.get_button_colors("primary"))
         self.install_roms_btn.pack(pady=10, padx=15, fill="x")
 
         # ROM progress bar (hidden by default)
@@ -2408,7 +2407,7 @@ class RetroMLSimple:
 
             generate_btn = ctk.CTkButton(buttons_frame, text="🎬 Generate Videos",
                                         command=generate_videos,
-                                        fg_color="#28a745", hover_color="#218838")
+                                        **Theme.get_button_colors("success"))
             generate_btn.pack(side="left", padx=5, pady=5)
 
             cancel_btn = ctk.CTkButton(buttons_frame, text="❌ Cancel",
@@ -2886,19 +2885,19 @@ class CUDADiagnosticsDialog:
         # Refresh button
         refresh_btn = ctk.CTkButton(button_frame, text="🔄 Refresh Diagnostics",
                                    command=self._refresh_diagnostics,
-                                   fg_color="#28a745", hover_color="#218838")
+                                   **Theme.get_button_colors("success"))
         refresh_btn.pack(side="left", padx=(10, 5), pady=10)
 
         # Copy report button
         copy_btn = ctk.CTkButton(button_frame, text="📋 Copy Report",
                                 command=self._copy_report,
-                                fg_color="#17a2b8", hover_color="#138496")
+                                **Theme.get_button_colors("info"))
         copy_btn.pack(side="left", padx=5, pady=10)
 
         # Close button
         close_btn = ctk.CTkButton(button_frame, text="✖️ Close",
                                  command=self.dialog.destroy,
-                                 fg_color="#6c757d", hover_color="#5a6268")
+                                 **Theme.get_button_colors("secondary"))
         close_btn.pack(side="right", padx=(5, 10), pady=10)
 
     def _refresh_diagnostics(self):
@@ -3122,15 +3121,15 @@ class StartTrainingDialog:
         btn_container.pack(fill="x", padx=20, pady=(0, 15))
 
         cancel_btn = ctk.CTkButton(btn_container, text="❌ Cancel", command=self._cancel,
-                                  fg_color="#6c757d", hover_color="#5a6268",
                                   height=50, font=ctk.CTkFont(size=14, weight="bold"),
-                                  width=140)
+                                  width=140,
+                                  **Theme.get_button_colors("secondary"))
         cancel_btn.pack(side="right", padx=(10, 0))
 
         start_btn = ctk.CTkButton(btn_container, text="🚀 Start AI Training", command=self._start,
-                                 fg_color="#28a745", hover_color="#218838",
                                  height=50, font=ctk.CTkFont(size=14, weight="bold"),
-                                 width=200)
+                                 width=200,
+                                 **Theme.get_button_colors("success"))
         start_btn.pack(side="right", padx=(0, 10))
 
         # Simple summary display

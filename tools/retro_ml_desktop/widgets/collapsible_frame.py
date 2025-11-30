@@ -7,6 +7,7 @@ Useful for organizing dashboard sections and improving UX.
 
 import customtkinter as ctk
 from typing import Optional, Callable
+from tools.retro_ml_desktop.theme import Theme
 
 
 class CollapsibleFrame(ctk.CTkFrame):
@@ -74,7 +75,7 @@ class CollapsibleFrame(ctk.CTkFrame):
             text=f"{icon} {self.title_text}",
             command=self.toggle,
             fg_color="transparent",
-            hover_color=("gray75", "gray25"),
+            hover_color=Theme.BG_SECONDARY,
             anchor="w",
             font=ctk.CTkFont(size=14, weight="bold")
         )

@@ -6,6 +6,7 @@ Displays training status with color coding and optional pulsing animation.
 
 import customtkinter as ctk
 from typing import Literal
+from tools.retro_ml_desktop.theme import Theme
 
 
 StatusType = Literal["running", "paused", "stopped", "completed", "failed", "idle"]
@@ -26,37 +27,37 @@ class StatusBadge(ctk.CTkFrame):
     STATUS_CONFIG = {
         "running": {
             "text": "● Running",
-            "color": "#4CAF50",  # Green
+            "color": Theme.STATUS_RUNNING,
             "text_color": "white",
             "pulse": True
         },
         "paused": {
             "text": "⏸ Paused",
-            "color": "#FFC107",  # Yellow/Amber
+            "color": Theme.STATUS_PAUSED,
             "text_color": "black",
             "pulse": False
         },
         "stopped": {
             "text": "⏹ Stopped",
-            "color": "#9E9E9E",  # Gray
+            "color": Theme.STATUS_STOPPED,
             "text_color": "white",
             "pulse": False
         },
         "completed": {
             "text": "✓ Completed",
-            "color": "#2196F3",  # Blue
+            "color": Theme.STATUS_COMPLETED,
             "text_color": "white",
             "pulse": False
         },
         "failed": {
             "text": "✗ Failed",
-            "color": "#F44336",  # Red
+            "color": Theme.STATUS_FAILED,
             "text_color": "white",
             "pulse": False
         },
         "idle": {
             "text": "○ Idle",
-            "color": "#607D8B",  # Blue Gray
+            "color": Theme.STATUS_IDLE,
             "text_color": "white",
             "pulse": False
         }
