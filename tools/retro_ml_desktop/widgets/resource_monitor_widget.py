@@ -2,55 +2,22 @@
 Resource Usage Monitor Widget - Real-time system resource monitoring.
 
 Displays:
-- GPU utilization and VRAM usage
+- GPU utilization and VRAM usage (with temperature and power draw)
 - CPU usage
 - System RAM usage
 
-Updates every 2 seconds via polling (not event-driven).
+Updates every 1 second via the new GPUMonitor module.
 """
 
 import customtkinter as ctk
 import psutil
-from typing import Optional, Dict, Any
+import logging
+from typing import Optional
 
-try:
-    from tools.retro_ml_desktop.gpu_detector import RobustGPUDetector
-    GPU_AVAILABLE = True
-except ImportError:
-    GPU_AVAILABLE = False
-
-try:
-    from tools.retro_ml_desktop.gpu_detector import RobustGPUDetector
-except ImportError:
-    RobustGPUDetector = None
-
-def _probe_gpu_available() -> bool:
-    """
-    Try to instantiate RobustGPUDetector and ask it if a usable GPU exists.
-    Returns False on any error.
-    """
-    if RobustGPUDetector is None:
-        print("[GPU] RobustGPUDetector could not be imported.")
-        return False
-
-    try:
-        detector = RobustGPUDetector()
-
-        # Detect GPU using the robust detector
-        result = detector.detect()
-
-        print("[GPU] Detector result:", result)
-
-        # GPUInfo dataclass has 'has_nvidia' field, not 'available'
-        return bool(result and result.has_nvidia)
-
-    except Exception as e:
-        print("[GPU] GPU probe failed:", e)
-        return False
+from tools.retro_ml_desktop.gpu_monitor import get_gpu_monitor, GPUMetrics
 
 
-GPU_AVAILABLE = _probe_gpu_available()
-print("[GPU] FINAL GPU_AVAILABLE =", GPU_AVAILABLE)
+logger = logging.getLogger(__name__)
 
 class ResourceMonitorWidget(ctk.CTkFrame):
     """Widget displaying real-time system resource usage."""
@@ -58,14 +25,13 @@ class ResourceMonitorWidget(ctk.CTkFrame):
     def __init__(self, parent=None, **kwargs):
         super().__init__(parent, **kwargs)
 
-        self.gpu_detector = RobustGPUDetector() if GPU_AVAILABLE else None
-        self.gpu_info = None  # Store GPU detection results
-        self._update_interval = 2000  # 2 seconds
-        self._update_job = None
+        # Get the global GPU monitor instance
+        self.gpu_monitor = get_gpu_monitor()
+        self.gpu_info = self.gpu_monitor.gpu_info
+        self.latest_gpu_metrics: Optional[GPUMetrics] = None
 
-        # Detect GPU once at startup
-        if self.gpu_detector:
-            self.gpu_info = self.gpu_detector.detect()
+        self._update_interval = 1000  # 1 second (faster updates)
+        self._update_job = None
 
         self._init_ui()
         self._start_monitoring()
@@ -81,12 +47,12 @@ class ResourceMonitorWidget(ctk.CTkFrame):
         header.pack(pady=(10, 5), padx=10, anchor="w")
 
         # GPU section
-        if GPU_AVAILABLE and self.gpu_detector and self.gpu_info and self.gpu_info.has_nvidia:
+        if self.gpu_info and self.gpu_info.is_available:
             gpu_frame = ctk.CTkFrame(self, fg_color="transparent")
             gpu_frame.pack(fill="x", padx=10, pady=5)
 
             # GPU Header with device name
-            gpu_name = self.gpu_info.gpu_name or "NVIDIA GPU"
+            gpu_name = self.gpu_info.name or "NVIDIA GPU"
             gpu_header = ctk.CTkLabel(
                 gpu_frame,
                 text=f"GPU: {gpu_name}",
@@ -94,29 +60,17 @@ class ResourceMonitorWidget(ctk.CTkFrame):
             )
             gpu_header.pack(anchor="w", pady=(0, 2))
 
-            # Device info (Driver, CUDA version)
-            info_parts = []
-            if self.gpu_info.driver_version:
-                info_parts.append(f"Driver: {self.gpu_info.driver_version}")
-            if self.gpu_info.cuda_version:
-                info_parts.append(f"CUDA: {self.gpu_info.cuda_version}")
+            # Device info (CUDA capability, VRAM)
+            cuda_cap = f"{self.gpu_info.cuda_capability[0]}.{self.gpu_info.cuda_capability[1]}"
+            info_text = f"CUDA Capability: {cuda_cap} | VRAM: {self.gpu_info.total_memory_gb:.1f} GB"
 
-            if info_parts:
-                self.gpu_info_label = ctk.CTkLabel(
-                    gpu_frame,
-                    text=" | ".join(info_parts),
-                    font=ctk.CTkFont(size=10),
-                    text_color="gray"
-                )
-                self.gpu_info_label.pack(anchor="w", pady=(0, 5))
-
-            # Device being used
-            self.gpu_device_label = ctk.CTkLabel(
+            self.gpu_info_label = ctk.CTkLabel(
                 gpu_frame,
-                text="Device: --",
-                font=ctk.CTkFont(size=10)
+                text=info_text,
+                font=ctk.CTkFont(size=10),
+                text_color="gray"
             )
-            self.gpu_device_label.pack(anchor="w", pady=(0, 5))
+            self.gpu_info_label.pack(anchor="w", pady=(0, 5))
 
             # GPU utilization bar
             self.gpu_util_label = ctk.CTkLabel(
@@ -142,14 +96,14 @@ class ResourceMonitorWidget(ctk.CTkFrame):
             self.gpu_mem_bar.pack(fill="x", pady=2)
             self.gpu_mem_bar.set(0)
 
-            # Per-process memory allocation
-            self.gpu_process_mem_label = ctk.CTkLabel(
+            # Temperature and Power (optional metrics)
+            self.gpu_temp_power_label = ctk.CTkLabel(
                 gpu_frame,
-                text="Process Memory: --",
+                text="Temp: -- | Power: --",
                 font=ctk.CTkFont(size=10),
                 text_color="gray"
             )
-            self.gpu_process_mem_label.pack(anchor="w", pady=(2, 0))
+            self.gpu_temp_power_label.pack(anchor="w", pady=(2, 0))
         else:
             # No GPU available message
             no_gpu_label = ctk.CTkLabel(
@@ -206,13 +160,24 @@ class ResourceMonitorWidget(ctk.CTkFrame):
 
     def _start_monitoring(self):
         """Start periodic resource monitoring."""
+        # Register callback with GPU monitor
+        if self.gpu_info and self.gpu_info.is_available:
+            self.gpu_monitor.add_callback(self._on_gpu_metrics)
+            # Start the GPU monitor if not already running
+            if not self.gpu_monitor.is_running:
+                self.gpu_monitor.start()
+
         self._update_resources()
+
+    def _on_gpu_metrics(self, metrics: GPUMetrics):
+        """Callback for GPU metrics updates."""
+        self.latest_gpu_metrics = metrics
 
     def _update_resources(self):
         """Update resource usage displays."""
         try:
             # Update GPU if available
-            if GPU_AVAILABLE and self.gpu_detector:
+            if self.gpu_info and self.gpu_info.is_available:
                 self._update_gpu()
 
             # Update CPU
@@ -222,79 +187,46 @@ class ResourceMonitorWidget(ctk.CTkFrame):
             self._update_ram()
 
         except Exception as e:
-            print(f"[ResourceMonitor] Error updating resources: {e}")
+            logger.error(f"Error updating resources: {e}")
 
         # Schedule next update
         self._update_job = self.after(self._update_interval, self._update_resources)
 
     def _update_gpu(self):
-        """Update GPU utilization and memory using PyTorch and pynvml."""
+        """Update GPU utilization and memory using the latest metrics."""
         try:
-            import torch
+            # Use the latest metrics from the GPU monitor callback
+            if not self.latest_gpu_metrics:
+                # If no metrics yet, try to get current snapshot
+                self.latest_gpu_metrics = self.gpu_monitor.get_current_metrics()
 
-            if not torch.cuda.is_available():
-                self.gpu_util_label.configure(text="GPU: Not available")
+            if not self.latest_gpu_metrics:
+                self.gpu_util_label.configure(text="GPU: No data")
                 self.gpu_util_bar.set(0)
                 self.gpu_mem_label.configure(text="VRAM: --")
                 self.gpu_mem_bar.set(0)
-                self.gpu_device_label.configure(text="Device: CPU (fallback)")
-                self.gpu_process_mem_label.configure(text="Process Memory: N/A")
+                self.gpu_temp_power_label.configure(text="Temp: -- | Power: --")
                 return
 
-            device_id = 0  # First GPU
-
-            # Show which device is being used
-            device_name = f"cuda:{device_id}"
-            self.gpu_device_label.configure(text=f"Device: {device_name}")
-
-            # Get GPU memory info from PyTorch
-            mem_allocated = torch.cuda.memory_allocated(device_id) / (1024 ** 3)  # GB
-            mem_reserved = torch.cuda.memory_reserved(device_id) / (1024 ** 3)  # GB
-            mem_total = torch.cuda.get_device_properties(device_id).total_memory / (1024 ** 3)  # GB
-
-            # Try to get GPU utilization from pynvml
-            gpu_util_pct = None
-            try:
-                import pynvml
-                pynvml.nvmlInit()
-                handle = pynvml.nvmlDeviceGetHandleByIndex(device_id)
-                utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                gpu_util_pct = utilization.gpu
-                pynvml.nvmlShutdown()
-            except Exception:
-                # Fallback: estimate based on memory usage
-                gpu_util_pct = None
+            metrics = self.latest_gpu_metrics
 
             # Update GPU utilization
-            if gpu_util_pct is not None:
-                self.gpu_util_label.configure(
-                    text=f"Utilization: {gpu_util_pct}%"
-                )
-                self.gpu_util_bar.set(gpu_util_pct / 100)
+            util_pct = metrics.utilization_percent
+            self.gpu_util_label.configure(text=f"Utilization: {util_pct}%")
+            self.gpu_util_bar.set(util_pct / 100)
 
-                # Set color based on utilization
-                if gpu_util_pct > 90:
-                    self.gpu_util_bar.configure(progress_color="red")
-                elif gpu_util_pct > 70:
-                    self.gpu_util_bar.configure(progress_color="orange")
-                else:
-                    self.gpu_util_bar.configure(progress_color="green")
+            # Set color based on utilization
+            if util_pct > 90:
+                self.gpu_util_bar.configure(progress_color="red")
+            elif util_pct > 70:
+                self.gpu_util_bar.configure(progress_color="orange")
             else:
-                # Fallback: show as "Active" if memory is being used
-                util_indicator = "Active" if mem_reserved > 0.1 else "Idle"
-                self.gpu_util_label.configure(
-                    text=f"Status: {util_indicator}"
-                )
-                util_display = 0.5 if mem_reserved > 0.1 else 0
-                self.gpu_util_bar.set(util_display)
-                self.gpu_util_bar.configure(progress_color="green" if mem_reserved > 0.1 else "gray")
+                self.gpu_util_bar.configure(progress_color="green")
 
-            # Calculate memory percentage (use reserved as it's more accurate)
-            mem_pct = (mem_reserved / mem_total) * 100 if mem_total > 0 else 0
-
-            # Update total VRAM display
+            # Update VRAM usage
+            mem_pct = metrics.memory_percent
             self.gpu_mem_label.configure(
-                text=f"VRAM: {mem_reserved:.1f} / {mem_total:.1f} GB ({mem_pct:.0f}%)"
+                text=f"VRAM: {metrics.memory_used_gb:.1f} / {metrics.memory_total_gb:.1f} GB ({mem_pct:.0f}%)"
             )
             self.gpu_mem_bar.set(mem_pct / 100)
 
@@ -306,13 +238,13 @@ class ResourceMonitorWidget(ctk.CTkFrame):
             else:
                 self.gpu_mem_bar.configure(progress_color="green")
 
-            # Update per-process memory allocation
-            self.gpu_process_mem_label.configure(
-                text=f"Process Memory: Allocated: {mem_allocated:.2f} GB | Reserved: {mem_reserved:.2f} GB"
-            )
+            # Update temperature and power draw
+            temp_text = f"{metrics.temperature_c}°C" if metrics.temperature_c is not None else "--"
+            power_text = f"{metrics.power_draw_w:.1f}W" if metrics.power_draw_w is not None else "--"
+            self.gpu_temp_power_label.configure(text=f"Temp: {temp_text} | Power: {power_text}")
 
         except Exception as e:
-            print(f"[ResourceMonitor] GPU update error: {e}")
+            logger.error(f"GPU update error: {e}")
             self.gpu_util_label.configure(text="GPU: Error")
             self.gpu_util_bar.set(0)
 
@@ -367,3 +299,7 @@ class ResourceMonitorWidget(ctk.CTkFrame):
         # Cancel pending update
         if self._update_job:
             self.after_cancel(self._update_job)
+
+        # Remove GPU monitor callback
+        if self.gpu_info and self.gpu_info.is_available:
+            self.gpu_monitor.remove_callback(self._on_gpu_metrics)
