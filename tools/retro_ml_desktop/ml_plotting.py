@@ -10,6 +10,9 @@ Enhanced with Sprint 1 features:
 - Chart annotations with database persistence
 - Chart state save/load functionality
 - Multi-format export capabilities
+- Performance optimization with data downsampling
+- Interactive tooltips with crosshair and point highlighting
+- Frame rate limiting for smooth updates
 """
 
 import tkinter as tk
@@ -29,6 +32,8 @@ from .enhanced_navigation import EnhancedNavigationToolbar
 from .chart_annotations import ChartAnnotationManager
 from .chart_state import ChartStateManager
 from .enhanced_export import EnhancedExportManager
+from .chart_performance import DataDownsampler, FrameRateLimiter, IncrementalUpdateTracker
+from .chart_tooltips import InteractiveTooltip
 
 
 class MLPlotter:
@@ -93,6 +98,12 @@ class MLPlotter:
         self.state_manager = None
         self.export_manager = None
 
+        # Sprint 1 Task 2: Performance & Interactivity enhancements
+        self.downsampler = DataDownsampler()
+        self.frame_limiter = FrameRateLimiter(max_fps=30)
+        self.update_tracker = IncrementalUpdateTracker()
+        self.tooltip_manager = None  # Initialized after canvas creation
+
         # Initialize plotting
         self._setup_plotting()
     
@@ -141,6 +152,9 @@ class MLPlotter:
 
             # Initialize export manager
             self.export_manager = EnhancedExportManager(self)
+
+            # Initialize interactive tooltip manager (Task 2.2)
+            self.tooltip_manager = InteractiveTooltip(self)
 
             self.logger.info("Sprint 1 features initialized successfully")
         except Exception as e:
@@ -297,6 +311,11 @@ class MLPlotter:
         """Update all plots with current data."""
         self.logger.debug(f"MLPlotter: _update_plots called with selected_runs: {self.selected_runs}")
 
+        # Task 2.1: Frame rate limiting to prevent excessive redraws
+        if not self.frame_limiter.should_update():
+            self.logger.debug("MLPlotter: Skipping update due to frame rate limit")
+            return
+
         if not self.selected_runs:
             self.logger.debug("MLPlotter: No selected runs, showing empty state")
             self._plot_empty_state()
@@ -307,13 +326,13 @@ class MLPlotter:
             # Clear all axes
             for ax in self.axes.values():
                 ax.clear()
-            
+
             # Reconfigure axes
             self._configure_axes()
-            
+
             # Plot data for each selected run
             colors = plt.cm.Set1(np.linspace(0, 1, len(self.selected_runs)))
-            
+
             for i, run_id in enumerate(self.selected_runs):
                 color = colors[i]
                 self._plot_run_data(run_id, color)
@@ -503,6 +522,11 @@ class MLPlotter:
             reward_steps = [m.timestep for m in metrics if m.episode_reward_mean is not None]
 
             if rewards:
+                # Task 2.1: Apply downsampling for large datasets
+                if len(rewards) > 1000:
+                    self.logger.debug(f"Downsampling reward data from {len(rewards)} to 1000 points")
+                    reward_steps, rewards = self.downsampler.lttb_downsample(reward_steps, rewards, threshold=1000)
+
                 # Create enhanced label with current value
                 latest_reward = rewards[-1]
                 best_reward = max(rewards)
@@ -542,6 +566,12 @@ class MLPlotter:
 
             if policy_losses:
                 policy_steps = [m.timestep for m in metrics if m.policy_loss is not None]
+
+                # Task 2.1: Apply downsampling for large datasets
+                if len(policy_losses) > 1000:
+                    self.logger.debug(f"Downsampling policy loss data from {len(policy_losses)} to 1000 points")
+                    policy_steps, policy_losses = self.downsampler.lttb_downsample(policy_steps, policy_losses, threshold=1000)
+
                 show_markers = len(policy_losses) < self.marker_threshold
 
                 # Enhanced label with current value
@@ -569,6 +599,12 @@ class MLPlotter:
 
             if value_losses:
                 value_steps = [m.timestep for m in metrics if m.value_loss is not None]
+
+                # Task 2.1: Apply downsampling for large datasets
+                if len(value_losses) > 1000:
+                    self.logger.debug(f"Downsampling value loss data from {len(value_losses)} to 1000 points")
+                    value_steps, value_losses = self.downsampler.lttb_downsample(value_steps, value_losses, threshold=1000)
+
                 show_markers = len(value_losses) < self.marker_threshold
 
                 # Enhanced label with current value
@@ -602,6 +638,12 @@ class MLPlotter:
 
             if learning_rates:
                 lr_steps = [m.timestep for m in metrics if m.learning_rate is not None]
+
+                # Task 2.1: Apply downsampling for large datasets
+                if len(learning_rates) > 1000:
+                    self.logger.debug(f"Downsampling learning rate data from {len(learning_rates)} to 1000 points")
+                    lr_steps, learning_rates = self.downsampler.lttb_downsample(lr_steps, learning_rates, threshold=1000)
+
                 show_markers = len(learning_rates) < self.marker_threshold
 
                 if len(learning_rates) == 1:
@@ -617,6 +659,12 @@ class MLPlotter:
 
             if kl_divergences:
                 kl_steps = [m.timestep for m in metrics if m.kl_divergence is not None]
+
+                # Task 2.1: Apply downsampling for large datasets
+                if len(kl_divergences) > 1000:
+                    self.logger.debug(f"Downsampling KL divergence data from {len(kl_divergences)} to 1000 points")
+                    kl_steps, kl_divergences = self.downsampler.lttb_downsample(kl_steps, kl_divergences, threshold=1000)
+
                 show_markers = len(kl_divergences) < self.marker_threshold
 
                 # Scale KL divergence for better visualization
@@ -639,6 +687,12 @@ class MLPlotter:
 
             if fps_data:
                 fps_steps = [m.timestep for m in metrics if m.fps is not None]
+
+                # Task 2.1: Apply downsampling for large datasets
+                if len(fps_data) > 1000:
+                    self.logger.debug(f"Downsampling FPS data from {len(fps_data)} to 1000 points")
+                    fps_steps, fps_data = self.downsampler.lttb_downsample(fps_steps, fps_data, threshold=1000)
+
                 show_markers = len(fps_data) < self.marker_threshold
 
                 # Enhanced label with current and average FPS

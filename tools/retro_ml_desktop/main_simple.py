@@ -44,8 +44,11 @@ from tools.retro_ml_desktop.cuda_diagnostics import CUDADiagnostics, create_user
 from tools.retro_ml_desktop.widgets import (
     RecentActivityWidget,
     LiveProgressWidget,
-    ResourceMonitorWidget
+    ResourceMonitorWidget,
+    CollapsibleFrame,
+    StatusBadge
 )
+from tools.retro_ml_desktop.theme import Theme
 
 
 class RetroMLSimple:
@@ -191,12 +194,16 @@ class RetroMLSimple:
         diagnostics_btn = ctk.CTkButton(
             sidebar, text="🔍 CUDA Diagnostics", font=ctk.CTkFont(size=12),
             height=35, command=self._show_cuda_diagnostics,
-            fg_color="#17a2b8", hover_color="#138496"
+            **Theme.get_button_colors("info")
         )
         diagnostics_btn.pack(pady=(5, 20), padx=10, fill="x")
-        
+
+        # Visual separator
+        separator1 = ctk.CTkFrame(sidebar, height=2, fg_color=Theme.SEPARATOR)
+        separator1.pack(fill="x", padx=20, pady=10)
+
         # System info
-        ctk.CTkLabel(sidebar, text="System Status:", font=ctk.CTkFont(weight="bold")).pack(pady=(20, 5))
+        ctk.CTkLabel(sidebar, text="System Status:", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
         
         # CPU info
         self.cpu_info_label = ctk.CTkLabel(sidebar, text="CPU: Loading...")
@@ -210,9 +217,13 @@ class RetroMLSimple:
         gpu_status = get_gpu_status_message()
         self.gpu_info_label = ctk.CTkLabel(sidebar, text=f"GPU: {gpu_status}")
         self.gpu_info_label.pack(pady=5, padx=10, anchor="w")
-        
+
+        # Visual separator
+        separator2 = ctk.CTkFrame(sidebar, height=2, fg_color=Theme.SEPARATOR)
+        separator2.pack(fill="x", padx=20, pady=15)
+
         # Available resources with detailed info
-        ctk.CTkLabel(sidebar, text="System Resources:", font=ctk.CTkFont(weight="bold")).pack(pady=(20, 5))
+        ctk.CTkLabel(sidebar, text="System Resources:", font=ctk.CTkFont(weight="bold")).pack(pady=(5, 5))
 
         # Get detailed resource information
         cpu_info = get_detailed_cpu_info()
@@ -253,14 +264,17 @@ class RetroMLSimple:
             command=self._show_storage_cleanup,
             font=ctk.CTkFont(size=12),
             height=30,
-            fg_color="#dc3545",
-            hover_color="#c82333"
+            **Theme.get_button_colors("danger")
         )
         storage_cleanup_btn.pack(pady=5, padx=10, fill="x")
 
+        # Visual separator
+        separator3 = ctk.CTkFrame(sidebar, height=2, fg_color=Theme.SEPARATOR)
+        separator3.pack(fill="x", padx=20, pady=15)
+
         # Training controls info
         controls_frame = ctk.CTkFrame(sidebar)
-        controls_frame.pack(fill="x", padx=10, pady=(20, 5))
+        controls_frame.pack(fill="x", padx=10, pady=(5, 5))
 
         ctk.CTkLabel(controls_frame, text="Training Controls",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(10, 5))
@@ -304,15 +318,15 @@ class RetroMLSimple:
         refresh_btn.pack(side="left", padx=5, pady=5)
 
         stop_btn = ctk.CTkButton(controls_frame, text="🛑 Stop Selected", command=self._stop_selected_process,
-                                fg_color="#dc3545", hover_color="#c82333")
+                                **Theme.get_button_colors("danger"))
         stop_btn.pack(side="left", padx=5)
 
         pause_btn = ctk.CTkButton(controls_frame, text="⏸️ Pause Selected", command=self._pause_selected_process,
-                                 fg_color="#ffc107", hover_color="#e0a800", text_color="black")
+                                 **Theme.get_button_colors("warning"))
         pause_btn.pack(side="left", padx=5)
 
         resume_btn = ctk.CTkButton(controls_frame, text="▶️ Resume Selected", command=self._resume_selected_process,
-                                  fg_color="#28a745", hover_color="#218838")
+                                  **Theme.get_button_colors("success"))
         resume_btn.pack(side="left", padx=5)
 
         remove_btn = ctk.CTkButton(controls_frame, text="Remove Selected", command=self._remove_selected_process)
@@ -323,11 +337,11 @@ class RetroMLSimple:
         clear_frame.pack(fill="x", padx=10, pady=5)
 
         clear_selected_btn = ctk.CTkButton(clear_frame, text="Clear Selected Data",
-                                         command=self._clear_selected_data, fg_color="orange")
+                                         command=self._clear_selected_data, **Theme.get_button_colors("warning"))
         clear_selected_btn.pack(side="left", padx=5)
 
         clear_all_btn = ctk.CTkButton(clear_frame, text="Clear ALL Training Data",
-                                    command=self._clear_all_data, fg_color="red")
+                                    command=self._clear_all_data, **Theme.get_button_colors("danger"))
         clear_all_btn.pack(side="left", padx=5)
         
         # Process list (using tkinter Treeview for table)
@@ -373,26 +387,25 @@ class RetroMLSimple:
         self._setup_activity_tab(experiment_manager)
 
     def _setup_overview_tab(self, experiment_manager):
-        """Setup Overview tab with collapsible sections."""
+        """Setup Overview tab with collapsible sections using new CollapsibleFrame widget."""
         overview_tab = self.dashboard_tabview.tab("Overview")
 
         # Container for collapsible sections
         container = ctk.CTkScrollableFrame(overview_tab)
         container.pack(fill="both", expand=True, padx=5, pady=5)
 
-        # Collapsible Section 1: Charts
-        self._charts_collapsed = False
-        self._charts_section_frame = self._create_collapsible_section(
+        # Section 1: Charts (using new CollapsibleFrame)
+        charts_section = CollapsibleFrame(
             container,
-            "📊 Charts",
-            lambda: self._toggle_section("charts")
+            title="Charts",
+            icon="📊",
+            collapsed_icon="📊",
+            initially_collapsed=False
         )
+        charts_section.pack(fill="both", expand=True, pady=(0, 10))
 
         # Charts content
-        charts_content = ctk.CTkFrame(self._charts_section_frame)
-        charts_content.pack(fill="both", expand=True, padx=5, pady=5)
-        self._charts_content_frame = charts_content
-
+        charts_content = charts_section.get_content_frame()
         self.ml_dashboard_overview = MLDashboard(
             parent_frame=charts_content,
             database=self.ml_database,
@@ -400,104 +413,53 @@ class RetroMLSimple:
             process_manager=self.process_manager
         )
 
-        # Collapsible Section 2: Stats (Live Progress + Resource Monitor)
-        self._stats_collapsed = False
-        self._stats_section_frame = self._create_collapsible_section(
+        # Section 2: Live Metrics (Live Progress + Resource Monitor)
+        metrics_section = CollapsibleFrame(
             container,
-            "📈 Stats",
-            lambda: self._toggle_section("stats")
+            title="Live Metrics",
+            icon="📈",
+            collapsed_icon="📈",
+            initially_collapsed=False
         )
+        metrics_section.pack(fill="both", expand=False, pady=(0, 10))
 
-        # Stats content (side by side)
-        stats_content = ctk.CTkFrame(self._stats_section_frame, height=220)
-        stats_content.pack(fill="x", expand=False, padx=5, pady=5)
-        stats_content.pack_propagate(False)
-        self._stats_content_frame = stats_content
+        # Metrics content (side by side)
+        metrics_content = metrics_section.get_content_frame()
+        metrics_content.configure(height=220)
+        metrics_content.pack_propagate(False)
 
         # Live Progress Widget (left)
-        live_progress_frame = ctk.CTkFrame(stats_content)
+        live_progress_frame = ctk.CTkFrame(metrics_content)
         live_progress_frame.pack(side="left", fill="both", expand=True, padx=(0, 2.5))
         self.live_progress_widget = LiveProgressWidget(parent=live_progress_frame)
         self.live_progress_widget.pack(fill="both", expand=True)
 
         # Resource Monitor Widget (right)
-        resource_monitor_frame = ctk.CTkFrame(stats_content)
+        resource_monitor_frame = ctk.CTkFrame(metrics_content)
         resource_monitor_frame.pack(side="right", fill="both", expand=True, padx=(2.5, 0))
         self.resource_monitor_widget = ResourceMonitorWidget(parent=resource_monitor_frame)
         self.resource_monitor_widget.pack(fill="both", expand=True)
 
-        # Collapsible Section 3: Activity Feed
-        self._activity_collapsed = False
-        self._activity_section_frame = self._create_collapsible_section(
+        # Section 3: Recent Activity
+        activity_section = CollapsibleFrame(
             container,
-            "🕒 Activity Feed",
-            lambda: self._toggle_section("activity")
+            title="Recent Activity",
+            icon="🕒",
+            collapsed_icon="🕒",
+            initially_collapsed=False
         )
+        activity_section.pack(fill="both", expand=False, pady=(0, 10))
 
         # Activity content
-        activity_content = ctk.CTkFrame(self._activity_section_frame, height=250)
-        activity_content.pack(fill="x", expand=False, padx=5, pady=5)
+        activity_content = activity_section.get_content_frame()
+        activity_content.configure(height=250)
         activity_content.pack_propagate(False)
-        self._activity_content_frame = activity_content
 
         self.recent_activity_widget_overview = RecentActivityWidget(
             experiment_manager=experiment_manager,
             parent=activity_content
         )
         self.recent_activity_widget_overview.pack(fill="both", expand=True)
-
-    def _create_collapsible_section(self, parent, title, toggle_callback):
-        """Create a collapsible section with header button."""
-        # Section frame
-        section_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        section_frame.pack(fill="both", expand=True, pady=(0, 10))
-
-        # Header button (clickable to collapse/expand)
-        header_btn = ctk.CTkButton(
-            section_frame,
-            text=f"▼ {title}",
-            command=toggle_callback,
-            fg_color=("gray75", "gray25"),
-            hover_color=("gray70", "gray30"),
-            anchor="w",
-            height=35,
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        header_btn.pack(fill="x", padx=0, pady=(0, 5))
-
-        # Store header button for later updates
-        section_frame._header_btn = header_btn
-
-        return section_frame
-
-    def _toggle_section(self, section_name):
-        """Toggle visibility of a collapsible section."""
-        if section_name == "charts":
-            self._charts_collapsed = not self._charts_collapsed
-            if self._charts_collapsed:
-                self._charts_content_frame.pack_forget()
-                self._charts_section_frame._header_btn.configure(text="▶ 📊 Charts")
-            else:
-                self._charts_content_frame.pack(fill="both", expand=True, padx=5, pady=5)
-                self._charts_section_frame._header_btn.configure(text="▼ 📊 Charts")
-
-        elif section_name == "stats":
-            self._stats_collapsed = not self._stats_collapsed
-            if self._stats_collapsed:
-                self._stats_content_frame.pack_forget()
-                self._stats_section_frame._header_btn.configure(text="▶ 📈 Stats")
-            else:
-                self._stats_content_frame.pack(fill="x", expand=False, padx=5, pady=5)
-                self._stats_section_frame._header_btn.configure(text="▼ 📈 Stats")
-
-        elif section_name == "activity":
-            self._activity_collapsed = not self._activity_collapsed
-            if self._activity_collapsed:
-                self._activity_content_frame.pack_forget()
-                self._activity_section_frame._header_btn.configure(text="▶ 🕒 Activity Feed")
-            else:
-                self._activity_content_frame.pack(fill="x", expand=False, padx=5, pady=5)
-                self._activity_section_frame._header_btn.configure(text="▼ 🕒 Activity Feed")
 
     def _setup_charts_tab(self):
         """Setup Charts tab with full-screen charts."""
@@ -567,8 +529,19 @@ class RetroMLSimple:
         # Generate videos button (NEW!)
         generate_videos_btn = ctk.CTkButton(controls_frame, text="🎥 Generate Videos from Training",
                                            command=self._generate_videos_dialog,
-                                           fg_color="#007bff", hover_color="#0056b3")
+                                           **Theme.get_button_colors("primary"))
         generate_videos_btn.pack(side="left", padx=5, pady=5)
+
+        # Video post-processing buttons (NEW!)
+        timelapse_btn = ctk.CTkButton(controls_frame, text="⏩ Create Time-Lapse",
+                                     command=self._create_timelapse_dialog,
+                                     **Theme.get_button_colors("info"))
+        timelapse_btn.pack(side="left", padx=5, pady=5)
+
+        progression_btn = ctk.CTkButton(controls_frame, text="📊 Milestone Progression",
+                                       command=self._create_progression_dialog,
+                                       **Theme.get_button_colors("info"))
+        progression_btn.pack(side="left", padx=5, pady=5)
 
         # Open video folder button
         open_folder_btn = ctk.CTkButton(controls_frame, text="📁 Open Video Folder",
@@ -622,7 +595,7 @@ class RetroMLSimple:
         action_frame.pack(fill="x", padx=10, pady=5)
 
         play_btn = ctk.CTkButton(action_frame, text="▶️ Play Video", command=self._play_selected_video,
-                                fg_color="#28a745", hover_color="#218838")
+                                **Theme.get_button_colors("success"))
         play_btn.pack(side="left", padx=5, pady=5)
 
         player_btn = ctk.CTkButton(action_frame, text="🎬 Video Player", command=self._open_video_player)
@@ -635,7 +608,7 @@ class RetroMLSimple:
         info_btn.pack(side="left", padx=5, pady=5)
 
         delete_btn = ctk.CTkButton(action_frame, text="🗑️ Delete Video", command=self._delete_selected_video,
-                                  fg_color="#dc3545", hover_color="#c82333")
+                                  **Theme.get_button_colors("danger"))
         delete_btn.pack(side="right", padx=5, pady=5)
 
         # Auto-refresh videos when tab is opened
@@ -701,10 +674,9 @@ class RetroMLSimple:
         self.install_roms_btn = ctk.CTkButton(rom_section,
                                              text=button_text,
                                              command=self._install_roms_from_settings,
-                                             fg_color="#007bff",
-                                             hover_color="#0056b3",
                                              height=40,
-                                             font=ctk.CTkFont(size=14))
+                                             font=ctk.CTkFont(size=14),
+                                             **Theme.get_button_colors("primary"))
         self.install_roms_btn.pack(pady=10, padx=15, fill="x")
 
         # ROM progress bar (hidden by default)
@@ -1627,6 +1599,15 @@ class RetroMLSimple:
                             self._append_log(f"  ✅ Found {len(dir_videos)} video(s) in {run_dir.name}")
                         videos.extend(dir_videos)
 
+            # Check post-processed videos directory (time-lapses, progressions, comparisons)
+            video_output_dir = self.project_root / "video" / "output"
+            if video_output_dir.exists():
+                self._append_log(f"🔍 Scanning post-processed videos directory: {video_output_dir}")
+                output_videos = self._scan_directory_videos(video_output_dir, "Post-Processed")
+                if output_videos:
+                    self._append_log(f"  ✅ Found {len(output_videos)} post-processed video(s)")
+                videos.extend(output_videos)
+
             # NEW: Check database for video_path entries (for custom output locations)
             if self.ml_database:
                 self._append_log(f"🔍 Checking database for video paths...")
@@ -1886,10 +1867,22 @@ class RetroMLSimple:
                         # Try to get video duration (basic approach)
                         duration = self._get_video_duration(file_path)
 
+                        # Detect post-processed video type from filename
+                        detected_type = video_type
+                        filename_lower = file_path.name.lower()
+                        if 'timelapse' in filename_lower or '_timelapse_' in filename_lower:
+                            detected_type = "Time-Lapse"
+                        elif 'progression' in filename_lower or '_progression_' in filename_lower:
+                            detected_type = "Progression"
+                        elif 'comparison' in filename_lower or '_comparison_' in filename_lower:
+                            detected_type = "Comparison"
+                        elif 'training' in filename_lower and video_type == "Other":
+                            detected_type = "Training"
+
                         videos.append({
                             'name': file_path.name,
                             'path': str(file_path),
-                            'type': video_type,
+                            'type': detected_type,
                             'duration': duration,
                             'size': f"{size_mb:.1f} MB",
                             'created': created.strftime("%Y-%m-%d %H:%M"),
@@ -2446,7 +2439,7 @@ class RetroMLSimple:
 
             generate_btn = ctk.CTkButton(buttons_frame, text="🎬 Generate Videos",
                                         command=generate_videos,
-                                        fg_color="#28a745", hover_color="#218838")
+                                        **Theme.get_button_colors("success"))
             generate_btn.pack(side="left", padx=5, pady=5)
 
             cancel_btn = ctk.CTkButton(buttons_frame, text="❌ Cancel",
@@ -2469,6 +2462,352 @@ class RetroMLSimple:
         else:
             self._append_log(f"❌ Video generation failed for {run_name}")
             messagebox.showerror("Error", f"Failed to generate videos for {run_name}.\nCheck the logs for details.")
+
+    def _create_timelapse_dialog(self):
+        """Show dialog to create time-lapse video from training recordings."""
+        try:
+            from conf.config import load_config
+            from training.video_post_processor import VideoPostProcessor
+
+            # Load config
+            config = load_config(str(self.project_root / "conf" / "config.yaml"))
+            processor = VideoPostProcessor(config)
+
+            # Find available training runs with recorded videos
+            training_dir = Path(config.get('paths', {}).get('videos_training', 'video/training'))
+
+            if not training_dir.exists():
+                messagebox.showwarning("No Training Videos",
+                                     "No training video directory found.\n\n"
+                                     "Training videos are recorded during training when enabled in config.")
+                return
+
+            # Get all run directories with videos
+            run_dirs = [d for d in training_dir.iterdir() if d.is_dir() and list(d.glob("*.mp4"))]
+
+            if not run_dirs:
+                messagebox.showwarning("No Training Videos",
+                                     "No training videos found.\n\n"
+                                     "Make sure training video recording is enabled in config.yaml.")
+                return
+
+            # Create dialog
+            dialog = ctk.CTkToplevel(self.root)
+            dialog.title("⏩ Create Time-Lapse Video")
+            dialog.geometry("650x600")  # Increased width and height
+            dialog.transient(self.root)
+            dialog.grab_set()
+
+            # Create scrollable frame
+            main_container = ctk.CTkScrollableFrame(dialog)
+            main_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+            # Title
+            title_label = ctk.CTkLabel(main_container, text="⏩ Create Time-Lapse from Training Videos",
+                                      font=ctk.CTkFont(size=16, weight="bold"))
+            title_label.pack(pady=10)
+
+            # Info
+            info_label = ctk.CTkLabel(main_container,
+                                     text="Create a sped-up time-lapse video from training recordings.",
+                                     font=ctk.CTkFont(size=11))
+            info_label.pack(pady=5)
+
+            # Run selection
+            selection_frame = ctk.CTkFrame(main_container)
+            selection_frame.pack(fill="x", padx=10, pady=10)
+
+            runs_label = ctk.CTkLabel(selection_frame, text="Select Training Run:",
+                                     font=ctk.CTkFont(size=12, weight="bold"))
+            runs_label.pack(pady=5)
+
+            runs_listbox = tk.Listbox(selection_frame, height=6)  # Reduced from 8 to 6
+            runs_listbox.pack(fill="x", padx=10, pady=5)
+
+            # Populate runs
+            run_data = []
+            for run_dir in sorted(run_dirs, key=lambda d: d.stat().st_mtime, reverse=True):
+                video_count = len(list(run_dir.glob("*.mp4")))
+                run_data.append({'id': run_dir.name, 'dir': run_dir, 'video_count': video_count})
+                runs_listbox.insert(tk.END, f"{run_dir.name} ({video_count} videos)")
+
+            # Speed settings
+            speed_frame = ctk.CTkFrame(main_container)
+            speed_frame.pack(fill="x", padx=10, pady=10)
+
+            speed_label = ctk.CTkLabel(speed_frame, text="Speed Multiplier:",
+                                      font=ctk.CTkFont(size=12, weight="bold"))
+            speed_label.pack(pady=5)
+
+            speed_var = tk.StringVar(value="10")
+            speed_entry = ctk.CTkEntry(speed_frame, textvariable=speed_var, width=100)
+            speed_entry.pack(pady=5)
+
+            speed_info = ctk.CTkLabel(speed_frame, text="(e.g., 10 = 10x faster)",
+                                     font=ctk.CTkFont(size=10), text_color="gray")
+            speed_info.pack()
+
+            # Add overlays checkbox
+            options_frame = ctk.CTkFrame(main_container)
+            options_frame.pack(fill="x", padx=10, pady=10)
+
+            ctk.CTkLabel(options_frame, text="Options:", font=ctk.CTkFont(size=12, weight="bold")).pack(pady=5)
+
+            overlays_var = tk.BooleanVar(value=True)
+            overlays_checkbox = ctk.CTkCheckBox(
+                options_frame,
+                text="✨ Include neural network overlays (shows AI learning)",
+                variable=overlays_var
+            )
+            overlays_checkbox.pack(pady=5)
+
+            ctk.CTkLabel(
+                options_frame,
+                text="Overlays show neural network visualization and stats.",
+                font=ctk.CTkFont(size=10),
+                text_color="gray"
+            ).pack(pady=5)
+
+            # Buttons
+            buttons_frame = ctk.CTkFrame(dialog)
+            buttons_frame.pack(fill="x", padx=20, pady=10)
+
+            def create_timelapse():
+                selection = runs_listbox.curselection()
+                if not selection:
+                    messagebox.showwarning("No Selection", "Please select a training run first.")
+                    return
+
+                selected_run = run_data[selection[0]]
+                run_id = selected_run['id']
+
+                try:
+                    speed = float(speed_var.get())
+                    if speed <= 0:
+                        raise ValueError("Speed must be positive")
+                except ValueError as e:
+                    messagebox.showerror("Invalid Input", f"Invalid speed multiplier: {e}")
+                    return
+
+                add_overlays = overlays_var.get()
+                dialog.destroy()
+
+                overlay_text = "with overlays" if add_overlays else "without overlays"
+                self._append_log(f"⏩ Creating time-lapse for {run_id} at {speed}x speed {overlay_text}...")
+
+                def process_thread():
+                    try:
+                        output_path = processor.create_timelapse(
+                            run_id=run_id,
+                            speed_multiplier=speed,
+                            add_overlays=add_overlays
+                        )
+
+                        if output_path:
+                            self.root.after(0, lambda: self._on_timelapse_complete(True, output_path))
+                        else:
+                            self.root.after(0, lambda: self._on_timelapse_complete(False, None))
+                    except Exception as e:
+                        self._append_log(f"❌ Error creating time-lapse: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        self.root.after(0, lambda: self._on_timelapse_complete(False, None))
+
+                thread = threading.Thread(target=process_thread, daemon=True)
+                thread.start()
+
+            create_btn = ctk.CTkButton(buttons_frame, text="⏩ Create Time-Lapse",
+                                      command=create_timelapse,
+                                      **Theme.get_button_colors("success"))
+            create_btn.pack(side="left", padx=5, pady=5)
+
+            cancel_btn = ctk.CTkButton(buttons_frame, text="❌ Cancel",
+                                      command=dialog.destroy)
+            cancel_btn.pack(side="right", padx=5, pady=5)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to show time-lapse dialog: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _on_timelapse_complete(self, success: bool, output_path: Optional[str]):
+        """Called when time-lapse creation completes."""
+        if success:
+            self._append_log(f"✅ Time-lapse created: {output_path}")
+            self._refresh_videos()
+            messagebox.showinfo("Success", f"Time-lapse video created successfully!\n\n{output_path}")
+        else:
+            self._append_log(f"❌ Time-lapse creation failed")
+            messagebox.showerror("Error", "Failed to create time-lapse video.\nCheck the logs for details.")
+
+    def _create_progression_dialog(self):
+        """Show dialog to create milestone progression video."""
+        try:
+            from conf.config import load_config
+            from training.video_post_processor import VideoPostProcessor
+
+            # Load config
+            config = load_config(str(self.project_root / "conf" / "config.yaml"))
+            processor = VideoPostProcessor(config)
+
+            # Find available training runs with recorded videos
+            training_dir = Path(config.get('paths', {}).get('videos_training', 'video/training'))
+
+            if not training_dir.exists():
+                messagebox.showwarning("No Training Videos",
+                                     "No training video directory found.\n\n"
+                                     "Training videos are recorded during training when enabled in config.")
+                return
+
+            # Get all run directories with videos
+            run_dirs = [d for d in training_dir.iterdir() if d.is_dir() and list(d.glob("*.mp4"))]
+
+            if not run_dirs:
+                messagebox.showwarning("No Training Videos",
+                                     "No training videos found.\n\n"
+                                     "Make sure training video recording is enabled in config.yaml.")
+                return
+
+            # Create dialog
+            dialog = ctk.CTkToplevel(self.root)
+            dialog.title("📊 Create Milestone Progression Video")
+            dialog.geometry("600x550")
+            dialog.transient(self.root)
+            dialog.grab_set()
+
+            # Title
+            title_label = ctk.CTkLabel(dialog, text="📊 Create Milestone Progression Video",
+                                      font=ctk.CTkFont(size=16, weight="bold"))
+            title_label.pack(pady=15)
+
+            # Info
+            info_label = ctk.CTkLabel(dialog,
+                                     text="Create a side-by-side comparison showing AI progress at different milestones.\n"
+                                          "Shows early, mid, and late training gameplay simultaneously.",
+                                     font=ctk.CTkFont(size=11))
+            info_label.pack(pady=5)
+
+            # Run selection
+            selection_frame = ctk.CTkFrame(dialog)
+            selection_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+            runs_label = ctk.CTkLabel(selection_frame, text="Select Training Run:",
+                                     font=ctk.CTkFont(size=12, weight="bold"))
+            runs_label.pack(pady=5)
+
+            runs_listbox = tk.Listbox(selection_frame, height=8)
+            runs_listbox.pack(fill="both", expand=True, padx=10, pady=5)
+
+            # Populate runs
+            run_data = []
+            for run_dir in sorted(run_dirs, key=lambda d: d.stat().st_mtime, reverse=True):
+                video_count = len(list(run_dir.glob("*.mp4")))
+                run_data.append({'id': run_dir.name, 'dir': run_dir, 'video_count': video_count})
+                runs_listbox.insert(tk.END, f"{run_dir.name} ({video_count} videos)")
+
+            # Layout settings
+            layout_frame = ctk.CTkFrame(dialog)
+            layout_frame.pack(fill="x", padx=20, pady=10)
+
+            layout_label = ctk.CTkLabel(layout_frame, text="Layout:",
+                                        font=ctk.CTkFont(size=12, weight="bold"))
+            layout_label.pack(pady=5)
+
+            layout_var = tk.StringVar(value="horizontal")
+
+            layout_options = ctk.CTkFrame(layout_frame)
+            layout_options.pack(pady=5)
+
+            ctk.CTkRadioButton(layout_options, text="Horizontal (side-by-side)",
+                             variable=layout_var, value="horizontal").pack(side="left", padx=10)
+            ctk.CTkRadioButton(layout_options, text="Vertical (stacked)",
+                             variable=layout_var, value="vertical").pack(side="left", padx=10)
+            ctk.CTkRadioButton(layout_options, text="Grid (2x2)",
+                             variable=layout_var, value="grid").pack(side="left", padx=10)
+
+            # Clip duration
+            duration_frame = ctk.CTkFrame(dialog)
+            duration_frame.pack(fill="x", padx=20, pady=10)
+
+            duration_label = ctk.CTkLabel(duration_frame, text="Clip Duration (seconds):",
+                                         font=ctk.CTkFont(size=12, weight="bold"))
+            duration_label.pack(pady=5)
+
+            duration_var = tk.StringVar(value="30")
+            duration_entry = ctk.CTkEntry(duration_frame, textvariable=duration_var, width=100)
+            duration_entry.pack(pady=5)
+
+            # Buttons
+            buttons_frame = ctk.CTkFrame(dialog)
+            buttons_frame.pack(fill="x", padx=20, pady=10)
+
+            def create_progression():
+                selection = runs_listbox.curselection()
+                if not selection:
+                    messagebox.showwarning("No Selection", "Please select a training run first.")
+                    return
+
+                selected_run = run_data[selection[0]]
+                run_id = selected_run['id']
+                layout = layout_var.get()
+
+                try:
+                    clip_duration = float(duration_var.get())
+                    if clip_duration <= 0:
+                        raise ValueError("Duration must be positive")
+                except ValueError as e:
+                    messagebox.showerror("Invalid Input", f"Invalid clip duration: {e}")
+                    return
+
+                dialog.destroy()
+
+                self._append_log(f"📊 Creating milestone progression video for {run_id}...")
+
+                def process_thread():
+                    try:
+                        output_path = processor.create_milestone_progression_video(
+                            run_id=run_id,
+                            milestone_percentages=[10, 50, 100],
+                            layout=layout,
+                            clip_duration=clip_duration
+                        )
+
+                        if output_path:
+                            self.root.after(0, lambda: self._on_progression_complete(True, output_path))
+                        else:
+                            self.root.after(0, lambda: self._on_progression_complete(False, None))
+                    except Exception as e:
+                        self._append_log(f"❌ Error creating progression video: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        self.root.after(0, lambda: self._on_progression_complete(False, None))
+
+                thread = threading.Thread(target=process_thread, daemon=True)
+                thread.start()
+
+            create_btn = ctk.CTkButton(buttons_frame, text="📊 Create Progression Video",
+                                      command=create_progression,
+                                      **Theme.get_button_colors("success"))
+            create_btn.pack(side="left", padx=5, pady=5)
+
+            cancel_btn = ctk.CTkButton(buttons_frame, text="❌ Cancel",
+                                      command=dialog.destroy)
+            cancel_btn.pack(side="right", padx=5, pady=5)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to show progression dialog: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _on_progression_complete(self, success: bool, output_path: Optional[str]):
+        """Called when progression video creation completes."""
+        if success:
+            self._append_log(f"✅ Progression video created: {output_path}")
+            self._refresh_videos()
+            messagebox.showinfo("Success", f"Milestone progression video created successfully!\n\n{output_path}")
+        else:
+            self._append_log(f"❌ Progression video creation failed")
+            messagebox.showerror("Error", "Failed to create progression video.\nCheck the logs for details.")
 
     def _show_start_training_dialog(self):
         """Show the start training dialog."""
@@ -2924,19 +3263,19 @@ class CUDADiagnosticsDialog:
         # Refresh button
         refresh_btn = ctk.CTkButton(button_frame, text="🔄 Refresh Diagnostics",
                                    command=self._refresh_diagnostics,
-                                   fg_color="#28a745", hover_color="#218838")
+                                   **Theme.get_button_colors("success"))
         refresh_btn.pack(side="left", padx=(10, 5), pady=10)
 
         # Copy report button
         copy_btn = ctk.CTkButton(button_frame, text="📋 Copy Report",
                                 command=self._copy_report,
-                                fg_color="#17a2b8", hover_color="#138496")
+                                **Theme.get_button_colors("info"))
         copy_btn.pack(side="left", padx=5, pady=10)
 
         # Close button
         close_btn = ctk.CTkButton(button_frame, text="✖️ Close",
                                  command=self.dialog.destroy,
-                                 fg_color="#6c757d", hover_color="#5a6268")
+                                 **Theme.get_button_colors("secondary"))
         close_btn.pack(side="right", padx=(5, 10), pady=10)
 
     def _refresh_diagnostics(self):
@@ -3160,15 +3499,15 @@ class StartTrainingDialog:
         btn_container.pack(fill="x", padx=20, pady=(0, 15))
 
         cancel_btn = ctk.CTkButton(btn_container, text="❌ Cancel", command=self._cancel,
-                                  fg_color="#6c757d", hover_color="#5a6268",
                                   height=50, font=ctk.CTkFont(size=14, weight="bold"),
-                                  width=140)
+                                  width=140,
+                                  **Theme.get_button_colors("secondary"))
         cancel_btn.pack(side="right", padx=(10, 0))
 
         start_btn = ctk.CTkButton(btn_container, text="🚀 Start AI Training", command=self._start,
-                                 fg_color="#28a745", hover_color="#218838",
                                  height=50, font=ctk.CTkFont(size=14, weight="bold"),
-                                 width=200)
+                                 width=200,
+                                 **Theme.get_button_colors("success"))
         start_btn.pack(side="right", padx=(0, 10))
 
         # Simple summary display
@@ -3224,9 +3563,11 @@ class StartTrainingDialog:
             if total_hours < 0.0167:
                 total_hours = 0.0167
 
-            # Calculate timesteps (roughly 1M timesteps per hour for most Atari games)
-            # This is an estimate - actual training speed varies by game
-            timesteps = int(total_hours * 1000000)
+            # Calculate timesteps based on realistic GPU training FPS
+            # Assuming ~450 FPS average for GPU training (conservative estimate)
+            # This matches the calculation in retro_ml/core/experiments/config.py
+            estimated_training_fps = 450
+            timesteps = int(total_hours * 3600 * estimated_training_fps)
 
             # Calculate number of milestones (one every 10% of progress, minimum 3)
             milestones = max(3, min(10, int(total_hours * 2)))

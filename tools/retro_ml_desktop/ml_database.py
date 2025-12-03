@@ -204,6 +204,28 @@ class MetricsDatabase:
                 )
             """)
 
+            # Training videos table (tracks video segments recorded during training)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS training_videos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    segment_number INTEGER NOT NULL,
+                    file_path TEXT NOT NULL,
+                    file_size_mb REAL,
+                    duration_seconds REAL,
+                    frame_count INTEGER,
+                    start_timestep INTEGER,
+                    end_timestep INTEGER,
+                    start_time TEXT NOT NULL,
+                    end_time TEXT,
+                    status TEXT NOT NULL DEFAULT 'recording',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (run_id) REFERENCES experiment_runs (run_id),
+                    UNIQUE(run_id, segment_number)
+                )
+            """)
+
             # Create indexes for performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_timestep ON training_metrics(run_id, timestep)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON training_metrics(timestamp)")
@@ -219,6 +241,8 @@ class MetricsDatabase:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_video_artifacts_experiment_id ON video_artifacts(experiment_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_video_artifacts_type ON video_artifacts(type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_video_artifacts_created ON video_artifacts(created)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_training_videos_run_id ON training_videos(run_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_training_videos_status ON training_videos(status)")
 
             conn.commit()
     
@@ -347,6 +371,66 @@ class MetricsDatabase:
         except Exception as e:
             self.logger.error(f"Failed to get field {field_name} for run {run_id}: {e}")
             return None
+
+    def auto_update_completed_runs(self) -> int:
+        """
+        Automatically mark runs with progress >= 100% as 'completed'.
+
+        This prevents runs from showing as 'running' when they've actually finished.
+
+        Returns:
+            Number of runs updated
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+
+                # Find runs that are marked as 'running' but have progress >= 100%
+                cursor.execute("""
+                    SELECT run_id, current_timestep, config_json
+                    FROM experiment_runs
+                    WHERE status = 'running'
+                """)
+
+                runs_to_update = []
+                for row in cursor.fetchall():
+                    run_id = row['run_id']
+                    current_timestep = row['current_timestep'] or 0
+                    config_json = row['config_json']
+
+                    if config_json:
+                        try:
+                            config_data = json.loads(config_json)
+                            total_timesteps = config_data.get('total_timesteps', 0)
+
+                            if total_timesteps > 0:
+                                progress = (current_timestep / total_timesteps) * 100
+
+                                # Mark as completed if progress >= 100%
+                                if progress >= 100.0:
+                                    runs_to_update.append(run_id)
+                        except (json.JSONDecodeError, KeyError):
+                            continue
+
+                # Update the runs
+                for run_id in runs_to_update:
+                    cursor.execute("""
+                        UPDATE experiment_runs
+                        SET status = 'completed', end_time = ?
+                        WHERE run_id = ? AND status = 'running'
+                    """, (datetime.now().isoformat(), run_id))
+
+                conn.commit()
+
+                if runs_to_update:
+                    self.logger.info(f"Auto-updated {len(runs_to_update)} completed runs: {runs_to_update}")
+
+                return len(runs_to_update)
+
+        except Exception as e:
+            self.logger.error(f"Failed to auto-update completed runs: {e}")
+            return 0
 
     def get_runs_by_game(self, env_id: str, exclude_active: bool = False) -> List[ExperimentRun]:
         """
@@ -1333,3 +1417,173 @@ class MetricsDatabase:
         except Exception as e:
             self.logger.error(f"Failed to delete video artifact: {e}")
             return False
+
+    # ========================================================================
+    # Training Videos Methods
+    # ========================================================================
+
+    def create_training_video_segment(
+        self,
+        run_id: str,
+        segment_number: int,
+        file_path: str,
+        start_timestep: int = 0,
+        start_time: Optional[str] = None
+    ) -> bool:
+        """
+        Create a new training video segment record.
+
+        Args:
+            run_id: Training run ID
+            segment_number: Segment number (1, 2, 3, ...)
+            file_path: Path to the video file
+            start_timestep: Starting timestep for this segment
+            start_time: Start time (ISO format, defaults to now)
+
+        Returns:
+            True if successful
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+
+                if start_time is None:
+                    start_time = datetime.now().isoformat()
+
+                conn.execute("""
+                    INSERT INTO training_videos (
+                        run_id, segment_number, file_path, start_timestep, start_time, status
+                    ) VALUES (?, ?, ?, ?, ?, 'recording')
+                """, (run_id, segment_number, file_path, start_timestep, start_time))
+
+                conn.commit()
+                return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to create training video segment: {e}")
+            return False
+
+    def update_training_video_segment(
+        self,
+        run_id: str,
+        segment_number: int,
+        file_size_mb: Optional[float] = None,
+        duration_seconds: Optional[float] = None,
+        frame_count: Optional[int] = None,
+        end_timestep: Optional[int] = None,
+        end_time: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> bool:
+        """
+        Update a training video segment record.
+
+        Args:
+            run_id: Training run ID
+            segment_number: Segment number
+            file_size_mb: File size in MB
+            duration_seconds: Duration in seconds
+            frame_count: Number of frames
+            end_timestep: Ending timestep for this segment
+            end_time: End time (ISO format)
+            status: Status ('recording', 'completed', 'failed')
+
+        Returns:
+            True if successful
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+
+                # Build dynamic update query
+                updates = []
+                params = []
+
+                if file_size_mb is not None:
+                    updates.append("file_size_mb = ?")
+                    params.append(file_size_mb)
+
+                if duration_seconds is not None:
+                    updates.append("duration_seconds = ?")
+                    params.append(duration_seconds)
+
+                if frame_count is not None:
+                    updates.append("frame_count = ?")
+                    params.append(frame_count)
+
+                if end_timestep is not None:
+                    updates.append("end_timestep = ?")
+                    params.append(end_timestep)
+
+                if end_time is not None:
+                    updates.append("end_time = ?")
+                    params.append(end_time)
+
+                if status is not None:
+                    updates.append("status = ?")
+                    params.append(status)
+
+                if not updates:
+                    return True  # Nothing to update
+
+                updates.append("updated_at = CURRENT_TIMESTAMP")
+
+                query = f"""
+                    UPDATE training_videos
+                    SET {', '.join(updates)}
+                    WHERE run_id = ? AND segment_number = ?
+                """
+                params.extend([run_id, segment_number])
+
+                conn.execute(query, params)
+                conn.commit()
+                return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to update training video segment: {e}")
+            return False
+
+    def get_training_videos(
+        self,
+        run_id: Optional[str] = None,
+        status: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get training video segments with optional filtering.
+
+        Args:
+            run_id: Optional run ID filter
+            status: Optional status filter
+
+        Returns:
+            List of training video segment dictionaries
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+
+                query = "SELECT * FROM training_videos WHERE 1=1"
+                params = []
+
+                if run_id:
+                    query += " AND run_id = ?"
+                    params.append(run_id)
+
+                if status:
+                    query += " AND status = ?"
+                    params.append(status)
+
+                query += " ORDER BY run_id, segment_number"
+
+                cursor = conn.execute(query, params)
+                columns = [desc[0] for desc in cursor.description]
+                videos = []
+
+                for row in cursor.fetchall():
+                    video_dict = dict(zip(columns, row))
+                    videos.append(video_dict)
+
+                return videos
+
+        except Exception as e:
+            self.logger.error(f"Failed to get training videos: {e}")
+            return []

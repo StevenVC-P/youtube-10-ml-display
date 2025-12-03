@@ -5,6 +5,8 @@ paths:
   videos_milestones: "video/milestones"
   videos_eval: "video/eval"
   videos_parts: "video/render/parts"
+  videos_training: "video/training" # Training video recordings
+  videos_output: "video/output" # Post-processed videos (time-lapses, compilations, comparisons)
   logs_tb: "logs/tb"
   models: "models/checkpoints"
   ffmpeg_path: "C:\\Users\\steve\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.0-full_build\\bin\\ffmpeg.exe"
@@ -40,6 +42,18 @@ recording:
   milestones_pct: [0, 1, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
   eval_every_steps: 100000
   eval_episodes: 2
+
+# Training video recording (Option D: Smart Recording)
+training_video:
+  enabled: true # Enable/disable training video recording
+  record_env_index: 0 # Which environment to record (0 = first env out of 16)
+  fps: 3 # Frame sampling rate (3 FPS = every 10th frame at 30 FPS game speed)
+  segment_duration_minutes: 30 # Create new video segment every 30 minutes
+  video_quality_crf: 23 # Video compression quality (18=high, 23=default, 28=lower)
+  resolution: [480, 360] # Video resolution (smaller = less storage)
+  codec: "libx264" # Video codec
+  preset: "veryfast" # Encoding speed preset (ultrafast, veryfast, fast, medium, slow)
+  output_format: "mp4" # Output video format
 
 stream:
   enabled: true

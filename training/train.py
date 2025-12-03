@@ -13,11 +13,15 @@ import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
+import logging
 
 import torch
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.logger import configure
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -211,6 +215,25 @@ def train_agent(
     models_path = Path(config['paths']['models'])
     models_path.mkdir(parents=True, exist_ok=True)
 
+    # Extract run_id from models path for training video recording
+    # Path format: "models/checkpoints/{run_id}" or "models/checkpoints/{run_id}/milestones"
+    run_id = None
+    try:
+        # Get the last part of the path that looks like a run_id (e.g., "run-abc123")
+        path_parts = models_path.parts
+        logger.info(f"[VIDEO DEBUG] models_path={models_path}")
+        logger.info(f"[VIDEO DEBUG] path_parts={path_parts}")
+        for part in reversed(path_parts):
+            if part.startswith('run-') or part.startswith('test-'):
+                run_id = part
+                logger.info(f"[VIDEO DEBUG] Found run_id={run_id}")
+                break
+    except Exception as e:
+        logger.warning(f"[VIDEO DEBUG] Failed to extract run_id: {e}")
+        pass  # If extraction fails, run_id will be None (no video recording)
+
+    logger.info(f"[VIDEO DEBUG] Final run_id={run_id}")
+
     # Setup TensorBoard logging
     tb_log_path = setup_tensorboard_logging(config)
 
@@ -220,11 +243,14 @@ def train_agent(
 
     if verbose > 0:
         print(f">> Creating {n_envs} vectorized environments...")
+        if run_id:
+            print(f">> Training video recording enabled for run: {run_id}")
 
     vec_env = make_vec_env(
         config=config,
         n_envs=n_envs,
-        seed=config.get('seed', 42)
+        seed=config.get('seed', 42),
+        run_id=run_id  # Pass run_id for training video recording
     )
 
     # Get environment info

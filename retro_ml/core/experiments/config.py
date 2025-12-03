@@ -259,10 +259,12 @@ class ExperimentConfig(BaseModel):
         Returns:
             ExperimentConfig instance
         """
-        # Calculate timesteps based on video length
-        # Assuming ~30 FPS, 8 envs, and want real-time video
+        # Calculate timesteps based on target training duration
+        # Using realistic GPU training FPS estimate (~450 steps/sec for PPO on Atari)
+        # This is an ESTIMATE - actual duration will vary based on hardware
         seconds = video_length_hours * 3600
-        timesteps = int(seconds * 30 * 8)  # FPS * envs
+        estimated_training_fps = 450  # Conservative estimate for GPU training
+        timesteps = int(seconds * estimated_training_fps)
 
         preset_configs = {
             "quick": {

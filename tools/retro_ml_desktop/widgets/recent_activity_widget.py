@@ -56,11 +56,11 @@ class RecentActivityWidget(ctk.CTkFrame):
         ctk.CTkLabel(filter_frame, text="Filter:").pack(side="left", padx=(0, 5))
         self.filter_combo = ctk.CTkComboBox(
             filter_frame,
-            values=["All", "Running", "Completed", "Failed", "Paused"],
+            values=["Active Only", "All", "Running", "Completed", "Failed", "Paused"],
             command=self._on_filter_changed,
             width=120
         )
-        self.filter_combo.set("All")
+        self.filter_combo.set("Active Only")  # Default to Active Only
         self.filter_combo.pack(side="left", padx=(0, 10))
 
         # Refresh button
@@ -204,7 +204,14 @@ class RecentActivityWidget(ctk.CTkFrame):
 
         # Get filter
         filter_text = self.filter_combo.get()
-        status_filter = None if filter_text == "All" else filter_text.lower()
+
+        # Handle "Active Only" filter (running experiments only)
+        if filter_text == "Active Only":
+            status_filter = "running"
+        elif filter_text == "All":
+            status_filter = None
+        else:
+            status_filter = filter_text.lower()
 
         # Query experiments
         experiments = self.experiment_manager.list_experiments(

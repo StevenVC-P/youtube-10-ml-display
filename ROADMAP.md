@@ -6,10 +6,11 @@ This roadmap outlines the phased development approach for Retro ML Desktop, alig
 
 ---
 
-## Phase 0 – Core Engine Stabilization
+## Phase 0 – Core Engine Stabilization ✅ COMPLETE
 
-**Timeline:** Now → Short Term (2-4 weeks)  
+**Timeline:** ✅ Completed 2025-11-29
 **Focus:** Backend-only, no UI dependencies
+**Status:** All exit criteria met, 98% test coverage
 
 ### Scope
 
@@ -46,10 +47,13 @@ This roadmap outlines the phased development approach for Retro ML Desktop, alig
 
 ---
 
-## Phase 1 – Tier 1 "Hobbyist" Release
+## Phase 1 – Tier 1 "Hobbyist" Release 🚀 IN PROGRESS
 
-**Timeline:** 4-8 weeks  
+**Timeline:** 4-8 weeks (Started 2025-11-30)
 **Focus:** Minimal viable desktop application
+**Status:** Sprint 1 starting - Dashboard & UI Polish
+**Branch:** `feature/phase1-hobbyist-release`
+**Planning Doc:** `docs/PHASE1_HOBBYIST_RELEASE.md`
 
 ### Scope
 
