@@ -532,6 +532,17 @@ class RetroMLSimple:
                                            **Theme.get_button_colors("primary"))
         generate_videos_btn.pack(side="left", padx=5, pady=5)
 
+        # Video post-processing buttons (NEW!)
+        timelapse_btn = ctk.CTkButton(controls_frame, text="⏩ Create Time-Lapse",
+                                     command=self._create_timelapse_dialog,
+                                     **Theme.get_button_colors("info"))
+        timelapse_btn.pack(side="left", padx=5, pady=5)
+
+        progression_btn = ctk.CTkButton(controls_frame, text="📊 Milestone Progression",
+                                       command=self._create_progression_dialog,
+                                       **Theme.get_button_colors("info"))
+        progression_btn.pack(side="left", padx=5, pady=5)
+
         # Open video folder button
         open_folder_btn = ctk.CTkButton(controls_frame, text="📁 Open Video Folder",
                                        command=self._open_video_folder)
@@ -1588,6 +1599,15 @@ class RetroMLSimple:
                             self._append_log(f"  ✅ Found {len(dir_videos)} video(s) in {run_dir.name}")
                         videos.extend(dir_videos)
 
+            # Check post-processed videos directory (time-lapses, progressions, comparisons)
+            video_output_dir = self.project_root / "video" / "output"
+            if video_output_dir.exists():
+                self._append_log(f"🔍 Scanning post-processed videos directory: {video_output_dir}")
+                output_videos = self._scan_directory_videos(video_output_dir, "Post-Processed")
+                if output_videos:
+                    self._append_log(f"  ✅ Found {len(output_videos)} post-processed video(s)")
+                videos.extend(output_videos)
+
             # NEW: Check database for video_path entries (for custom output locations)
             if self.ml_database:
                 self._append_log(f"🔍 Checking database for video paths...")
@@ -1847,10 +1867,22 @@ class RetroMLSimple:
                         # Try to get video duration (basic approach)
                         duration = self._get_video_duration(file_path)
 
+                        # Detect post-processed video type from filename
+                        detected_type = video_type
+                        filename_lower = file_path.name.lower()
+                        if 'timelapse' in filename_lower or '_timelapse_' in filename_lower:
+                            detected_type = "Time-Lapse"
+                        elif 'progression' in filename_lower or '_progression_' in filename_lower:
+                            detected_type = "Progression"
+                        elif 'comparison' in filename_lower or '_comparison_' in filename_lower:
+                            detected_type = "Comparison"
+                        elif 'training' in filename_lower and video_type == "Other":
+                            detected_type = "Training"
+
                         videos.append({
                             'name': file_path.name,
                             'path': str(file_path),
-                            'type': video_type,
+                            'type': detected_type,
                             'duration': duration,
                             'size': f"{size_mb:.1f} MB",
                             'created': created.strftime("%Y-%m-%d %H:%M"),
@@ -2430,6 +2462,352 @@ class RetroMLSimple:
         else:
             self._append_log(f"❌ Video generation failed for {run_name}")
             messagebox.showerror("Error", f"Failed to generate videos for {run_name}.\nCheck the logs for details.")
+
+    def _create_timelapse_dialog(self):
+        """Show dialog to create time-lapse video from training recordings."""
+        try:
+            from conf.config import load_config
+            from training.video_post_processor import VideoPostProcessor
+
+            # Load config
+            config = load_config(str(self.project_root / "conf" / "config.yaml"))
+            processor = VideoPostProcessor(config)
+
+            # Find available training runs with recorded videos
+            training_dir = Path(config.get('paths', {}).get('videos_training', 'video/training'))
+
+            if not training_dir.exists():
+                messagebox.showwarning("No Training Videos",
+                                     "No training video directory found.\n\n"
+                                     "Training videos are recorded during training when enabled in config.")
+                return
+
+            # Get all run directories with videos
+            run_dirs = [d for d in training_dir.iterdir() if d.is_dir() and list(d.glob("*.mp4"))]
+
+            if not run_dirs:
+                messagebox.showwarning("No Training Videos",
+                                     "No training videos found.\n\n"
+                                     "Make sure training video recording is enabled in config.yaml.")
+                return
+
+            # Create dialog
+            dialog = ctk.CTkToplevel(self.root)
+            dialog.title("⏩ Create Time-Lapse Video")
+            dialog.geometry("650x600")  # Increased width and height
+            dialog.transient(self.root)
+            dialog.grab_set()
+
+            # Create scrollable frame
+            main_container = ctk.CTkScrollableFrame(dialog)
+            main_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+            # Title
+            title_label = ctk.CTkLabel(main_container, text="⏩ Create Time-Lapse from Training Videos",
+                                      font=ctk.CTkFont(size=16, weight="bold"))
+            title_label.pack(pady=10)
+
+            # Info
+            info_label = ctk.CTkLabel(main_container,
+                                     text="Create a sped-up time-lapse video from training recordings.",
+                                     font=ctk.CTkFont(size=11))
+            info_label.pack(pady=5)
+
+            # Run selection
+            selection_frame = ctk.CTkFrame(main_container)
+            selection_frame.pack(fill="x", padx=10, pady=10)
+
+            runs_label = ctk.CTkLabel(selection_frame, text="Select Training Run:",
+                                     font=ctk.CTkFont(size=12, weight="bold"))
+            runs_label.pack(pady=5)
+
+            runs_listbox = tk.Listbox(selection_frame, height=6)  # Reduced from 8 to 6
+            runs_listbox.pack(fill="x", padx=10, pady=5)
+
+            # Populate runs
+            run_data = []
+            for run_dir in sorted(run_dirs, key=lambda d: d.stat().st_mtime, reverse=True):
+                video_count = len(list(run_dir.glob("*.mp4")))
+                run_data.append({'id': run_dir.name, 'dir': run_dir, 'video_count': video_count})
+                runs_listbox.insert(tk.END, f"{run_dir.name} ({video_count} videos)")
+
+            # Speed settings
+            speed_frame = ctk.CTkFrame(main_container)
+            speed_frame.pack(fill="x", padx=10, pady=10)
+
+            speed_label = ctk.CTkLabel(speed_frame, text="Speed Multiplier:",
+                                      font=ctk.CTkFont(size=12, weight="bold"))
+            speed_label.pack(pady=5)
+
+            speed_var = tk.StringVar(value="10")
+            speed_entry = ctk.CTkEntry(speed_frame, textvariable=speed_var, width=100)
+            speed_entry.pack(pady=5)
+
+            speed_info = ctk.CTkLabel(speed_frame, text="(e.g., 10 = 10x faster)",
+                                     font=ctk.CTkFont(size=10), text_color="gray")
+            speed_info.pack()
+
+            # Add overlays checkbox
+            options_frame = ctk.CTkFrame(main_container)
+            options_frame.pack(fill="x", padx=10, pady=10)
+
+            ctk.CTkLabel(options_frame, text="Options:", font=ctk.CTkFont(size=12, weight="bold")).pack(pady=5)
+
+            overlays_var = tk.BooleanVar(value=True)
+            overlays_checkbox = ctk.CTkCheckBox(
+                options_frame,
+                text="✨ Include neural network overlays (shows AI learning)",
+                variable=overlays_var
+            )
+            overlays_checkbox.pack(pady=5)
+
+            ctk.CTkLabel(
+                options_frame,
+                text="Overlays show neural network visualization and stats.",
+                font=ctk.CTkFont(size=10),
+                text_color="gray"
+            ).pack(pady=5)
+
+            # Buttons
+            buttons_frame = ctk.CTkFrame(dialog)
+            buttons_frame.pack(fill="x", padx=20, pady=10)
+
+            def create_timelapse():
+                selection = runs_listbox.curselection()
+                if not selection:
+                    messagebox.showwarning("No Selection", "Please select a training run first.")
+                    return
+
+                selected_run = run_data[selection[0]]
+                run_id = selected_run['id']
+
+                try:
+                    speed = float(speed_var.get())
+                    if speed <= 0:
+                        raise ValueError("Speed must be positive")
+                except ValueError as e:
+                    messagebox.showerror("Invalid Input", f"Invalid speed multiplier: {e}")
+                    return
+
+                add_overlays = overlays_var.get()
+                dialog.destroy()
+
+                overlay_text = "with overlays" if add_overlays else "without overlays"
+                self._append_log(f"⏩ Creating time-lapse for {run_id} at {speed}x speed {overlay_text}...")
+
+                def process_thread():
+                    try:
+                        output_path = processor.create_timelapse(
+                            run_id=run_id,
+                            speed_multiplier=speed,
+                            add_overlays=add_overlays
+                        )
+
+                        if output_path:
+                            self.root.after(0, lambda: self._on_timelapse_complete(True, output_path))
+                        else:
+                            self.root.after(0, lambda: self._on_timelapse_complete(False, None))
+                    except Exception as e:
+                        self._append_log(f"❌ Error creating time-lapse: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        self.root.after(0, lambda: self._on_timelapse_complete(False, None))
+
+                thread = threading.Thread(target=process_thread, daemon=True)
+                thread.start()
+
+            create_btn = ctk.CTkButton(buttons_frame, text="⏩ Create Time-Lapse",
+                                      command=create_timelapse,
+                                      **Theme.get_button_colors("success"))
+            create_btn.pack(side="left", padx=5, pady=5)
+
+            cancel_btn = ctk.CTkButton(buttons_frame, text="❌ Cancel",
+                                      command=dialog.destroy)
+            cancel_btn.pack(side="right", padx=5, pady=5)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to show time-lapse dialog: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _on_timelapse_complete(self, success: bool, output_path: Optional[str]):
+        """Called when time-lapse creation completes."""
+        if success:
+            self._append_log(f"✅ Time-lapse created: {output_path}")
+            self._refresh_videos()
+            messagebox.showinfo("Success", f"Time-lapse video created successfully!\n\n{output_path}")
+        else:
+            self._append_log(f"❌ Time-lapse creation failed")
+            messagebox.showerror("Error", "Failed to create time-lapse video.\nCheck the logs for details.")
+
+    def _create_progression_dialog(self):
+        """Show dialog to create milestone progression video."""
+        try:
+            from conf.config import load_config
+            from training.video_post_processor import VideoPostProcessor
+
+            # Load config
+            config = load_config(str(self.project_root / "conf" / "config.yaml"))
+            processor = VideoPostProcessor(config)
+
+            # Find available training runs with recorded videos
+            training_dir = Path(config.get('paths', {}).get('videos_training', 'video/training'))
+
+            if not training_dir.exists():
+                messagebox.showwarning("No Training Videos",
+                                     "No training video directory found.\n\n"
+                                     "Training videos are recorded during training when enabled in config.")
+                return
+
+            # Get all run directories with videos
+            run_dirs = [d for d in training_dir.iterdir() if d.is_dir() and list(d.glob("*.mp4"))]
+
+            if not run_dirs:
+                messagebox.showwarning("No Training Videos",
+                                     "No training videos found.\n\n"
+                                     "Make sure training video recording is enabled in config.yaml.")
+                return
+
+            # Create dialog
+            dialog = ctk.CTkToplevel(self.root)
+            dialog.title("📊 Create Milestone Progression Video")
+            dialog.geometry("600x550")
+            dialog.transient(self.root)
+            dialog.grab_set()
+
+            # Title
+            title_label = ctk.CTkLabel(dialog, text="📊 Create Milestone Progression Video",
+                                      font=ctk.CTkFont(size=16, weight="bold"))
+            title_label.pack(pady=15)
+
+            # Info
+            info_label = ctk.CTkLabel(dialog,
+                                     text="Create a side-by-side comparison showing AI progress at different milestones.\n"
+                                          "Shows early, mid, and late training gameplay simultaneously.",
+                                     font=ctk.CTkFont(size=11))
+            info_label.pack(pady=5)
+
+            # Run selection
+            selection_frame = ctk.CTkFrame(dialog)
+            selection_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+            runs_label = ctk.CTkLabel(selection_frame, text="Select Training Run:",
+                                     font=ctk.CTkFont(size=12, weight="bold"))
+            runs_label.pack(pady=5)
+
+            runs_listbox = tk.Listbox(selection_frame, height=8)
+            runs_listbox.pack(fill="both", expand=True, padx=10, pady=5)
+
+            # Populate runs
+            run_data = []
+            for run_dir in sorted(run_dirs, key=lambda d: d.stat().st_mtime, reverse=True):
+                video_count = len(list(run_dir.glob("*.mp4")))
+                run_data.append({'id': run_dir.name, 'dir': run_dir, 'video_count': video_count})
+                runs_listbox.insert(tk.END, f"{run_dir.name} ({video_count} videos)")
+
+            # Layout settings
+            layout_frame = ctk.CTkFrame(dialog)
+            layout_frame.pack(fill="x", padx=20, pady=10)
+
+            layout_label = ctk.CTkLabel(layout_frame, text="Layout:",
+                                        font=ctk.CTkFont(size=12, weight="bold"))
+            layout_label.pack(pady=5)
+
+            layout_var = tk.StringVar(value="horizontal")
+
+            layout_options = ctk.CTkFrame(layout_frame)
+            layout_options.pack(pady=5)
+
+            ctk.CTkRadioButton(layout_options, text="Horizontal (side-by-side)",
+                             variable=layout_var, value="horizontal").pack(side="left", padx=10)
+            ctk.CTkRadioButton(layout_options, text="Vertical (stacked)",
+                             variable=layout_var, value="vertical").pack(side="left", padx=10)
+            ctk.CTkRadioButton(layout_options, text="Grid (2x2)",
+                             variable=layout_var, value="grid").pack(side="left", padx=10)
+
+            # Clip duration
+            duration_frame = ctk.CTkFrame(dialog)
+            duration_frame.pack(fill="x", padx=20, pady=10)
+
+            duration_label = ctk.CTkLabel(duration_frame, text="Clip Duration (seconds):",
+                                         font=ctk.CTkFont(size=12, weight="bold"))
+            duration_label.pack(pady=5)
+
+            duration_var = tk.StringVar(value="30")
+            duration_entry = ctk.CTkEntry(duration_frame, textvariable=duration_var, width=100)
+            duration_entry.pack(pady=5)
+
+            # Buttons
+            buttons_frame = ctk.CTkFrame(dialog)
+            buttons_frame.pack(fill="x", padx=20, pady=10)
+
+            def create_progression():
+                selection = runs_listbox.curselection()
+                if not selection:
+                    messagebox.showwarning("No Selection", "Please select a training run first.")
+                    return
+
+                selected_run = run_data[selection[0]]
+                run_id = selected_run['id']
+                layout = layout_var.get()
+
+                try:
+                    clip_duration = float(duration_var.get())
+                    if clip_duration <= 0:
+                        raise ValueError("Duration must be positive")
+                except ValueError as e:
+                    messagebox.showerror("Invalid Input", f"Invalid clip duration: {e}")
+                    return
+
+                dialog.destroy()
+
+                self._append_log(f"📊 Creating milestone progression video for {run_id}...")
+
+                def process_thread():
+                    try:
+                        output_path = processor.create_milestone_progression_video(
+                            run_id=run_id,
+                            milestone_percentages=[10, 50, 100],
+                            layout=layout,
+                            clip_duration=clip_duration
+                        )
+
+                        if output_path:
+                            self.root.after(0, lambda: self._on_progression_complete(True, output_path))
+                        else:
+                            self.root.after(0, lambda: self._on_progression_complete(False, None))
+                    except Exception as e:
+                        self._append_log(f"❌ Error creating progression video: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        self.root.after(0, lambda: self._on_progression_complete(False, None))
+
+                thread = threading.Thread(target=process_thread, daemon=True)
+                thread.start()
+
+            create_btn = ctk.CTkButton(buttons_frame, text="📊 Create Progression Video",
+                                      command=create_progression,
+                                      **Theme.get_button_colors("success"))
+            create_btn.pack(side="left", padx=5, pady=5)
+
+            cancel_btn = ctk.CTkButton(buttons_frame, text="❌ Cancel",
+                                      command=dialog.destroy)
+            cancel_btn.pack(side="right", padx=5, pady=5)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to show progression dialog: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _on_progression_complete(self, success: bool, output_path: Optional[str]):
+        """Called when progression video creation completes."""
+        if success:
+            self._append_log(f"✅ Progression video created: {output_path}")
+            self._refresh_videos()
+            messagebox.showinfo("Success", f"Milestone progression video created successfully!\n\n{output_path}")
+        else:
+            self._append_log(f"❌ Progression video creation failed")
+            messagebox.showerror("Error", "Failed to create progression video.\nCheck the logs for details.")
 
     def _show_start_training_dialog(self):
         """Show the start training dialog."""
@@ -3185,9 +3563,11 @@ class StartTrainingDialog:
             if total_hours < 0.0167:
                 total_hours = 0.0167
 
-            # Calculate timesteps (roughly 1M timesteps per hour for most Atari games)
-            # This is an estimate - actual training speed varies by game
-            timesteps = int(total_hours * 1000000)
+            # Calculate timesteps based on realistic GPU training FPS
+            # Assuming ~450 FPS average for GPU training (conservative estimate)
+            # This matches the calculation in retro_ml/core/experiments/config.py
+            estimated_training_fps = 450
+            timesteps = int(total_hours * 3600 * estimated_training_fps)
 
             # Calculate number of milestones (one every 10% of progress, minimum 3)
             milestones = max(3, min(10, int(total_hours * 2)))

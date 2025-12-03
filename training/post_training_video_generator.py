@@ -74,44 +74,57 @@ class PostTrainingVideoGenerator:
     def find_checkpoint_files(self) -> Dict[float, Path]:
         """Find all available checkpoint files and map them to milestone percentages."""
         checkpoint_files = {}
-        
+
         if not self.model_dir.exists():
             print(f"[PostVideo] Warning: Model directory {self.model_dir} does not exist")
             return checkpoint_files
-        
+
         # Look for checkpoint files (various naming patterns)
         patterns = [
             "checkpoint_*.zip",
-            "model_*.zip", 
+            "model_*.zip",
             "step_*.zip",
             "pct_*.zip"
         ]
-        
-        for pattern in patterns:
-            for file_path in self.model_dir.glob(pattern):
-                # Try to extract milestone percentage from filename
-                filename = file_path.stem
-                
-                # Extract percentage from various naming patterns
-                pct = self._extract_percentage_from_filename(filename)
-                if pct and pct in self.milestones_pct:
-                    checkpoint_files[pct] = file_path
-                    if self.verbose >= 2:
-                        print(f"[PostVideo] Found checkpoint for {pct}%: {file_path.name}")
-        
+
+        # Search in both the main directory and the milestones subdirectory
+        search_dirs = [self.model_dir]
+        milestones_dir = self.model_dir / "milestones"
+        if milestones_dir.exists():
+            search_dirs.append(milestones_dir)
+            if self.verbose >= 2:
+                print(f"[PostVideo] Found milestones directory: {milestones_dir}")
+
+        for search_dir in search_dirs:
+            for pattern in patterns:
+                for file_path in search_dir.glob(pattern):
+                    # Try to extract milestone percentage from filename
+                    filename = file_path.stem
+
+                    # Extract percentage from various naming patterns
+                    pct = self._extract_percentage_from_filename(filename)
+                    if pct and pct in self.milestones_pct:
+                        checkpoint_files[pct] = file_path
+                        if self.verbose >= 2:
+                            print(f"[PostVideo] Found checkpoint for {pct}%: {file_path.name}")
+
         # If no milestone-specific checkpoints, use the final model
         if not checkpoint_files:
             final_model_patterns = ["final_model.zip", "best_model.zip", "model.zip"]
             for pattern in final_model_patterns:
-                final_model = self.model_dir / pattern
-                if final_model.exists():
-                    # Use final model for all milestones
-                    for pct in self.milestones_pct:
-                        checkpoint_files[pct] = final_model
-                    if self.verbose >= 1:
-                        print(f"[PostVideo] Using final model for all milestones: {final_model.name}")
+                # Check both main directory and milestones subdirectory
+                for search_dir in search_dirs:
+                    final_model = search_dir / pattern
+                    if final_model.exists():
+                        # Use final model for all milestones
+                        for pct in self.milestones_pct:
+                            checkpoint_files[pct] = final_model
+                        if self.verbose >= 1:
+                            print(f"[PostVideo] Using final model for all milestones: {final_model.name}")
+                        break
+                if checkpoint_files:
                     break
-        
+
         return checkpoint_files
     
     def _extract_percentage_from_filename(self, filename: str) -> Optional[float]:
@@ -301,6 +314,9 @@ class PostTrainingVideoGenerator:
                     total_frames=target_frames
                 )
 
+            # Get training context for this checkpoint
+            training_context = self._get_training_context(milestone_pct)
+
             # Load model from checkpoint
             model = self._load_model(checkpoint_path)
             if model is None:
@@ -316,7 +332,7 @@ class PostTrainingVideoGenerator:
             )
 
             # Record gameplay frames DIRECTLY to video (streaming mode)
-            success = self._record_gameplay_to_video(model, env, video_path, video_id=video_id)
+            success = self._record_gameplay_to_video(model, env, video_path, video_id=video_id, training_context=training_context)
 
             # Cleanup
             env.close()
@@ -341,11 +357,108 @@ class PostTrainingVideoGenerator:
 
             return None
     
+    def _get_training_context(self, milestone_pct: float) -> Dict[str, Any]:
+        """
+        Get training context for a specific milestone percentage.
+
+        Args:
+            milestone_pct: Milestone percentage (e.g., 50.0 for 50%)
+
+        Returns:
+            Dictionary with training context information
+        """
+        context = {
+            'milestone_pct': milestone_pct,
+            'checkpoint_timestep': 0,
+            'total_timesteps': 0,
+            'training_progress_pct': milestone_pct,
+            'training_duration_hours': 0.0,
+            'training_episodes_completed': 0,
+            'best_reward': 0.0,
+            'avg_reward': 0.0
+        }
+
+        try:
+            if self.db and self.run_id:
+                # Get run summary stats from database
+                stats = self.db.get_run_summary_stats(self.run_id)
+
+                if stats:
+                    # Get total timesteps from config by querying for this specific run_id
+                    # We need to query the database directly to get the config for THIS run
+                    with self.db._lock:
+                        conn = self.db._get_connection()
+                        cursor = conn.execute(
+                            "SELECT config_json FROM experiment_runs WHERE run_id = ?",
+                            (self.run_id,)
+                        )
+                        row = cursor.fetchone()
+
+                        if row and row['config_json']:
+                            import json
+                            config_data = json.loads(row['config_json'])
+                            total_timesteps = config_data.get('total_timesteps', 0)
+
+                            if total_timesteps > 0:
+                                context['total_timesteps'] = total_timesteps
+
+                                # Calculate checkpoint timestep from milestone percentage
+                                context['checkpoint_timestep'] = int(total_timesteps * (milestone_pct / 100.0))
+
+                    # Get reward stats
+                    if stats.get('reward_stats'):
+                        context['best_reward'] = stats['reward_stats'].get('max', 0.0) or 0.0
+                        context['avg_reward'] = stats['reward_stats'].get('mean', 0.0) or 0.0
+
+                    # Get episode count at this checkpoint timestep
+                    # Query training_metrics for the episode_count at the checkpoint timestep
+                    checkpoint_timestep = context.get('checkpoint_timestep', 0)
+                    if checkpoint_timestep > 0:
+                        with self.db._lock:
+                            conn = self.db._get_connection()
+                            # Get the episode count at or near this checkpoint timestep
+                            # Filter for episode_count > 0 to avoid sparse data
+                            cursor = conn.execute("""
+                                SELECT episode_count
+                                FROM training_metrics
+                                WHERE run_id = ? AND timestep <= ? AND episode_count > 0
+                                ORDER BY timestep DESC
+                                LIMIT 1
+                            """, (self.run_id, checkpoint_timestep))
+                            row = cursor.fetchone()
+
+                            if row and row['episode_count']:
+                                context['training_episodes_completed'] = row['episode_count']
+
+                    # Calculate training duration
+                    # Query the experiment_runs table for start_time and end_time
+                    with self.db._lock:
+                        conn = self.db._get_connection()
+                        cursor = conn.execute(
+                            "SELECT start_time, end_time FROM experiment_runs WHERE run_id = ?",
+                            (self.run_id,)
+                        )
+                        row = cursor.fetchone()
+
+                        if row and row['start_time']:
+                            from datetime import datetime
+                            start_time = datetime.fromisoformat(row['start_time'])
+                            end_time = datetime.fromisoformat(row['end_time']) if row['end_time'] else datetime.now()
+
+                            duration_seconds = (end_time - start_time).total_seconds()
+                            context['training_duration_hours'] = duration_seconds / 3600.0
+
+        except Exception as e:
+            if self.verbose >= 2:
+                print(f"[PostVideo] Warning: Could not get training context: {e}")
+
+        return context
+
     def _load_model(self, model_path: Path):
         """Load model from checkpoint file."""
         try:
             algorithm = self.config['train']['algo'].upper()
-            
+
             if algorithm == 'PPO':
                 return PPO.load(str(model_path))
             elif algorithm == 'DQN':
@@ -353,12 +466,12 @@ class PostTrainingVideoGenerator:
             else:
                 print(f"[PostVideo] Unsupported algorithm: {algorithm}")
                 return None
-                
+
         except Exception as e:
             print(f"[PostVideo] Failed to load model from {model_path}: {e}")
             return None
     
-    def _record_gameplay_to_video(self, model, env, output_path: Path, video_id: str = None) -> bool:
+    def _record_gameplay_to_video(self, model, env, output_path: Path, video_id: str = None, training_context: Dict[str, Any] = None) -> bool:
         """
         Record gameplay frames directly to video file (streaming mode).
         This avoids storing all frames in memory, which is critical for long videos.
@@ -375,7 +488,7 @@ class PostTrainingVideoGenerator:
             obs, _ = env.reset()
             total_reward = 0.0
             frames_since_reset = 0
-            episode_count = 0
+            episode_count = 1  # Start at 1 (first episode is "Episode #1")
             frames_written = 0
 
             # Add small exploration to prevent stuck patterns
@@ -391,7 +504,7 @@ class PostTrainingVideoGenerator:
 
                 if game_frame is not None:
                     # Extract ML analytics for this frame
-                    analytics = self._extract_ml_analytics(model, obs, frame_idx, total_reward)
+                    analytics = self._extract_ml_analytics(model, obs, frame_idx, total_reward, training_context)
                     analytics['episode_count'] = episode_count
                     analytics['frames_since_reset'] = frames_since_reset
 
@@ -495,7 +608,7 @@ class PostTrainingVideoGenerator:
         obs, _ = env.reset()
         total_reward = 0.0
         frames_since_reset = 0
-        episode_count = 0
+        episode_count = 1  # Start at 1 (first episode is "Episode #1")
 
         # Add small exploration to prevent stuck patterns
         exploration_rate = 0.05  # 5% random actions
@@ -505,8 +618,8 @@ class PostTrainingVideoGenerator:
             game_frame = env.render()
 
             if game_frame is not None:
-                # Extract ML analytics for this frame
-                analytics = self._extract_ml_analytics(model, obs, frame_idx, total_reward)
+                # Extract ML analytics for this frame (no training context for deprecated method)
+                analytics = self._extract_ml_analytics(model, obs, frame_idx, total_reward, training_context=None)
                 analytics['episode_count'] = episode_count
                 analytics['frames_since_reset'] = frames_since_reset
 
@@ -570,7 +683,7 @@ class PostTrainingVideoGenerator:
             print(f"[PostVideo] Error creating video: {e}")
             return False
 
-    def _extract_ml_analytics(self, model, obs: np.ndarray, frame_idx: int, total_reward: float) -> Dict[str, Any]:
+    def _extract_ml_analytics(self, model, obs: np.ndarray, frame_idx: int, total_reward: float, training_context: Dict[str, Any] = None) -> Dict[str, Any]:
         """Extract ML analytics from the current model state, including real layer activations."""
         analytics = {
             'step': frame_idx,
@@ -579,7 +692,8 @@ class PostTrainingVideoGenerator:
             'action_probs': None,
             'value_estimate': 0.0,
             'episode_reward': total_reward,
-            'layer_activations': {}  # Store real layer activations
+            'layer_activations': {},  # Store real layer activations
+            'training_context': training_context or {}  # Add training context
         }
 
         try:
@@ -698,6 +812,8 @@ class PostTrainingVideoGenerator:
         green = (0, 255, 0)
         blue = (255, 0, 0)
         cyan = (255, 255, 0)
+        orange = (0, 165, 255)
+        gray = (180, 180, 180)
 
         # Font
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -710,52 +826,95 @@ class PostTrainingVideoGenerator:
         # Title
         cv2.putText(panel, f"{game_name} - {algo_name} Neural Activity Viewer", (10, 30), font, 0.5, white, 1)
 
-        # Subtitle with training parameters
-        progress = analytics.get('progress_pct', 0)
-        lr = self.config.get('train', {}).get('learning_rate', 0.00025)
-        cv2.putText(panel, f"Post-Training Evaluation | Progress: {progress:.1f}% | lr={lr:.1e}", (10, 50), font, 0.35, (180, 180, 180), 1)
+        # Get training context
+        training_context = analytics.get('training_context', {})
 
-        # Training metrics
-        y_pos = 80
-        line_height = 20
+        # Subtitle with training progress
+        if training_context:
+            checkpoint_timestep = training_context.get('checkpoint_timestep', 0)
+            total_timesteps = training_context.get('total_timesteps', 0)
+            training_progress = training_context.get('training_progress_pct', 0)
+
+            if total_timesteps > 0:
+                cv2.putText(panel, f"Training: {checkpoint_timestep:,} / {total_timesteps:,} steps ({training_progress:.0f}%)",
+                           (10, 50), font, 0.35, orange, 1)
+            else:
+                cv2.putText(panel, f"Post-Training Evaluation", (10, 50), font, 0.35, gray, 1)
+        else:
+            progress = analytics.get('progress_pct', 0)
+            lr = self.config.get('train', {}).get('learning_rate', 0.00025)
+            cv2.putText(panel, f"Post-Training Evaluation | Progress: {progress:.1f}% | lr={lr:.1e}", (10, 50), font, 0.35, gray, 1)
+
+        # Training metrics section
+        y_pos = 75
+        line_height = 18
+
+        # Training Progress Section (if available)
+        if training_context and training_context.get('total_timesteps', 0) > 0:
+            cv2.putText(panel, "=== TRAINING PROGRESS ===", (10, int(y_pos)), mono_font, 0.35, cyan, 1)
+            y_pos += line_height
+
+            training_hours = training_context.get('training_duration_hours', 0)
+            training_episodes = training_context.get('training_episodes_completed', 0)
+            best_reward = training_context.get('best_reward', 0)
+            avg_reward = training_context.get('avg_reward', 0)
+
+            cv2.putText(panel, f"Duration:   {training_hours:.1f} hours", (10, int(y_pos)), mono_font, 0.35, white, 1)
+            y_pos += line_height
+
+            if training_episodes > 0:
+                cv2.putText(panel, f"Episodes:   {training_episodes:,} completed", (10, int(y_pos)), mono_font, 0.35, cyan, 1)
+                y_pos += line_height
+
+            cv2.putText(panel, f"Best Reward: {best_reward:.1f}", (10, int(y_pos)), mono_font, 0.35, green, 1)
+            y_pos += line_height
+            cv2.putText(panel, f"Avg Reward:  {avg_reward:.1f}", (10, int(y_pos)), mono_font, 0.35, white, 1)
+            y_pos += line_height * 1.3
+
+        # Current Playback Section
+        cv2.putText(panel, "=== PLAYBACK ===", (10, int(y_pos)), mono_font, 0.35, cyan, 1)
+        y_pos += line_height
 
         frame_idx = analytics.get('frame_in_video', 0)
         episode_reward = analytics.get('episode_reward', 0.0)
         episode_count = analytics.get('episode_count', 0)
         frames_since_reset = analytics.get('frames_since_reset', 0)
 
-        cv2.putText(panel, f"Frame:      {frame_idx:,}", (10, int(y_pos)), mono_font, 0.4, white, 1)
-        y_pos += line_height
-        cv2.putText(panel, f"Progress:   {progress:.2f}%", (10, int(y_pos)), mono_font, 0.4, white, 1)
-        y_pos += line_height
-        cv2.putText(panel, f"Episode:    #{episode_count}", (10, int(y_pos)), mono_font, 0.4, cyan, 1)
-        y_pos += line_height
-        cv2.putText(panel, f"Ep Reward:  {episode_reward:.1f}", (10, int(y_pos)), mono_font, 0.4, white, 1)
+        # Highlight episode number if it's a new episode (first 60 frames = 2 seconds)
+        episode_color = yellow if frames_since_reset < 60 else white
+        cv2.putText(panel, f"Episode:    #{episode_count}", (10, int(y_pos)), mono_font, 0.35, episode_color, 2 if frames_since_reset < 60 else 1)
         y_pos += line_height
 
-        # Show "NEW EPISODE" indicator for first few frames after reset
-        if frames_since_reset < 30:
-            cv2.putText(panel, ">>> NEW EPISODE <<<", (10, int(y_pos)), mono_font, 0.4, yellow, 1)
-        y_pos += line_height * 1.5
+        cv2.putText(panel, f"Score:      {episode_reward:.1f}", (10, int(y_pos)), mono_font, 0.35, white, 1)
+        y_pos += line_height
+        cv2.putText(panel, f"Frame:      {frame_idx:,}", (10, int(y_pos)), mono_font, 0.35, gray, 1)
+        y_pos += line_height
+
+        # Show "NEW EPISODE" indicator for first 60 frames (2 seconds) after reset
+        if frames_since_reset < 60:
+            # Pulsing effect: alternate between yellow and orange
+            pulse_color = yellow if (frames_since_reset // 10) % 2 == 0 else orange
+            cv2.putText(panel, ">>> NEW EPISODE <<<", (10, int(y_pos)), mono_font, 0.4, pulse_color, 2)
+        y_pos += line_height * 1.3
 
         # Action probabilities
         action_names = ['NOOP', 'FIRE', 'RIGHT', 'LEFT']
         action_probs = analytics.get('action_probs')
 
         if action_probs is not None and len(action_probs) >= 4:
-            cv2.putText(panel, "Policy Distribution:", (10, int(y_pos)), mono_font, 0.4, (200, 200, 200), 1)
-            y_pos += line_height * 0.8
+            cv2.putText(panel, "=== POLICY ===", (10, int(y_pos)), mono_font, 0.35, cyan, 1)
+            y_pos += line_height
 
             for i, (name, prob) in enumerate(zip(action_names, action_probs[:4])):
                 color = yellow if prob == max(action_probs[:4]) else (150, 150, 150)
                 cv2.putText(panel, f"  {name:5s}: {prob:.3f}", (10, int(y_pos)), mono_font, 0.35, color, 1)
-                y_pos += line_height * 0.8
+                y_pos += line_height * 0.9
 
-        y_pos += line_height * 0.5
+        y_pos += line_height * 0.3
 
         # Value estimate
         value = analytics.get('value_estimate', 0.0)
-        cv2.putText(panel, f"Value Est:  {value:.3f}", (10, int(y_pos)), mono_font, 0.4, green, 1)
+        cv2.putText(panel, f"Value Est:  {value:.3f}", (10, int(y_pos)), mono_font, 0.35, green, 1)
 
     def _draw_neural_network(self, panel: np.ndarray, analytics: Dict[str, Any]) -> None:
         """Draw neural network visualization with REAL layer activations from the model."""

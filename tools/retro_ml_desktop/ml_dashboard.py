@@ -120,12 +120,12 @@ class MLDashboard:
         filter_frame.pack(fill="x", padx=5, pady=2)
         
         ctk.CTkLabel(filter_frame, text="Filter:").pack(side="left", padx=5)
-        
-        self.status_filter = ctk.CTkOptionMenu(filter_frame, 
-                                              values=["All", "Running", "Completed", "Failed", "Paused"],
+
+        self.status_filter = ctk.CTkOptionMenu(filter_frame,
+                                              values=["Active Only", "All", "Running", "Completed", "Failed", "Paused"],
                                               command=self._filter_runs)
         self.status_filter.pack(side="left", padx=5)
-        self.status_filter.set("All")
+        self.status_filter.set("Active Only")  # Default to Active Only
         
         # Runs tree
         tree_frame = ctk.CTkFrame(left_frame)
@@ -363,13 +363,25 @@ class MLDashboard:
         try:
             logging.debug("Refreshing ML Dashboard runs display...")
 
+            # Auto-update completed runs (mark runs with progress >= 100% as completed)
+            updated_count = self.database.auto_update_completed_runs()
+            if updated_count > 0:
+                logging.info(f"Auto-updated {updated_count} completed runs")
+
             # Clear existing items
             for item in self.runs_tree.get_children():
                 self.runs_tree.delete(item)
 
             # Get filter
             status_filter = self.status_filter.get()
-            filter_status = None if status_filter == "All" else status_filter.lower()
+
+            # Handle "Active Only" filter (running with progress < 100%)
+            if status_filter == "Active Only":
+                filter_status = "running"
+            elif status_filter == "All":
+                filter_status = None
+            else:
+                filter_status = status_filter.lower()
 
             # Get runs from database
             runs = self.database.get_experiment_runs(status=filter_status)
