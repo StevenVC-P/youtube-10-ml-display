@@ -58,8 +58,19 @@ class PostTrainingVideoGenerator:
         self.verbose = verbose
         self.db = db  # MetricsDatabase instance for progress tracking
         self.run_id = run_id  # Training run ID for database tracking
+        self.segment_counter = 0
+
+        # Showcase mode settings (opt-in). Accept either top-level keys or under "showcase".
+        showcase_cfg = config.get('showcase', {})
+        self.showcase_mode = bool(config.get('showcase_mode', showcase_cfg.get('showcase_mode', False)))
+        self.showcase_exploration_rate = float(config.get('showcase_exploration_rate', showcase_cfg.get('showcase_exploration_rate', 0.10)))
+        self.showcase_seed_base = int(config.get('showcase_seed_base', showcase_cfg.get('showcase_seed_base', 42)))
+        self.showcase_stochastic_policy = bool(config.get('showcase_stochastic_policy', showcase_cfg.get('showcase_stochastic_policy', True)))
+        self.showcase_randomness_mode = str(config.get('showcase_randomness_mode', showcase_cfg.get('showcase_randomness_mode', 'both'))).lower()
 
         # Create output directory
+        if self.showcase_mode:
+            self.output_dir = self.output_dir / "showcase"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         if self.verbose >= 1:
@@ -164,8 +175,9 @@ class PostTrainingVideoGenerator:
 
         print(f"[PostVideo] Generating videos for {len(checkpoint_files)} checkpoints...")
 
-        for milestone_pct in sorted(checkpoint_files.keys()):
+        for idx, milestone_pct in enumerate(sorted(checkpoint_files.keys())):
             checkpoint_path = checkpoint_files[milestone_pct]
+            self.segment_counter = idx
 
             try:
                 # Generate unique video ID for progress tracking
@@ -220,8 +232,9 @@ class PostTrainingVideoGenerator:
 
         # Generate video for each checkpoint
         temp_videos = []
-        for milestone_pct in sorted_milestones:
+        for idx, milestone_pct in enumerate(sorted_milestones):
             checkpoint_path = checkpoint_files[milestone_pct]
+            self.segment_counter = idx
 
             try:
                 # Temporarily set clip_seconds for this checkpoint
@@ -325,14 +338,26 @@ class PostTrainingVideoGenerator:
                 return None
 
             # Create evaluation environment with proper wrappers and rgb_array render mode
+            segment_seed = self.showcase_seed_base + self.segment_counter if self.showcase_mode else 42
             env = make_eval_env(
                 config=self.config,
-                seed=42,  # Fixed seed for reproducible videos
+                seed=segment_seed,
                 record_video=True  # This enables rgb_array render mode
             )
+            # Ensure segment seed is applied before recording begins
+            env.reset(seed=segment_seed)
+            print(f"[SHOWCASE] segment_start run_id={self.run_id} idx={self.segment_counter} seed={segment_seed} env=new reset_seeded=true")
 
             # Record gameplay frames DIRECTLY to video (streaming mode)
-            success = self._record_gameplay_to_video(model, env, video_path, video_id=video_id, training_context=training_context)
+            success = self._record_gameplay_to_video(
+                model,
+                env,
+                video_path,
+                video_id=video_id,
+                training_context=training_context,
+                segment_seed=segment_seed,
+                segment_idx=self.segment_counter
+            )
 
             # Cleanup
             env.close()
@@ -471,7 +496,7 @@ class PostTrainingVideoGenerator:
             print(f"[PostVideo] Failed to load model from {model_path}: {e}")
             return None
     
-    def _record_gameplay_to_video(self, model, env, output_path: Path, video_id: str = None, training_context: Dict[str, Any] = None) -> bool:
+    def _record_gameplay_to_video(self, model, env, output_path: Path, video_id: str = None, training_context: Dict[str, Any] = None, segment_seed: int = 42, segment_idx: int = 0) -> bool:
         """
         Record gameplay frames directly to video file (streaming mode).
         This avoids storing all frames in memory, which is critical for long videos.
@@ -479,8 +504,27 @@ class PostTrainingVideoGenerator:
         try:
             target_frames = self.clip_seconds * self.fps
 
+            # Determine randomness behavior for this segment
+            if self.showcase_mode:
+                randomness_mode = self.showcase_randomness_mode
+                if randomness_mode not in ("stochastic", "epsilon", "both"):
+                    randomness_mode = "both"
+                if randomness_mode == "stochastic":
+                    deterministic_flag = not self.showcase_stochastic_policy
+                    epsilon_used = 0.0
+                elif randomness_mode == "epsilon":
+                    deterministic_flag = True
+                    epsilon_used = self.showcase_exploration_rate
+                else:  # both
+                    deterministic_flag = not self.showcase_stochastic_policy
+                    epsilon_used = self.showcase_exploration_rate
+            else:
+                randomness_mode = "disabled"
+                deterministic_flag = True
+                epsilon_used = 0.05
+
             if self.verbose >= 1:
-                print(f"[PostVideo] Recording {target_frames} frames ({self.clip_seconds}s) directly to video...")
+                print(f"[PostVideo] Recording {target_frames} frames ({self.clip_seconds}s) directly to video... (showcase={self.showcase_mode}, mode={randomness_mode}, eps={epsilon_used}, stochastic={not deterministic_flag}, seed={segment_seed}, seg={segment_idx})")
 
             # Initialize video writer (will be created on first frame)
             video_writer = None
@@ -492,12 +536,13 @@ class PostTrainingVideoGenerator:
             frames_written = 0
 
             # Add small exploration to prevent stuck patterns
-            exploration_rate = 0.05  # 5% random actions
+            exploration_rate = epsilon_used
 
             # Track time for ETA calculation
             start_time = time.time()
             last_update_time = start_time
 
+            first_actions = []
             for frame_idx in range(target_frames):
                 # Get frame from environment
                 game_frame = env.render()
@@ -507,6 +552,10 @@ class PostTrainingVideoGenerator:
                     analytics = self._extract_ml_analytics(model, obs, frame_idx, total_reward, training_context)
                     analytics['episode_count'] = episode_count
                     analytics['frames_since_reset'] = frames_since_reset
+                    analytics['segment_seed'] = segment_seed
+                    analytics['segment_idx'] = segment_idx
+                    analytics['showcase_epsilon'] = exploration_rate
+                    analytics['showcase_stochastic'] = not deterministic_flag
 
                     # Create enhanced frame with neural network visualization
                     enhanced_frame = self._create_enhanced_frame(game_frame, analytics)
@@ -553,12 +602,17 @@ class PostTrainingVideoGenerator:
                         print(f"[PostVideo]   Progress: {elapsed_seconds}s / {self.clip_seconds}s ({frames_written} frames)")
 
                 # Get action from model with epsilon-greedy exploration
+                action_source = None
                 if np.random.random() < exploration_rate:
                     # Random action for exploration
                     action = env.action_space.sample()
+                    action_source = "epsilon_random"
                 else:
-                    # Use model's action (deterministic for consistency)
-                    action, _ = model.predict(obs, deterministic=True)
+                    # Use model's action
+                    action, _ = model.predict(obs, deterministic=deterministic_flag)
+                    action_source = "policy_stochastic" if not deterministic_flag else "policy_deterministic"
+                if self.showcase_mode and len(first_actions) < 3:
+                    first_actions.append(action_source)
 
                 # For Breakout: ensure FIRE is pressed shortly after reset to launch ball
                 # This prevents the agent from getting stuck at the start screen
@@ -585,6 +639,9 @@ class PostTrainingVideoGenerator:
 
             if self.verbose >= 1:
                 print(f"[PostVideo]   Completed: {frames_written} frames written to {output_path.name}")
+
+            if self.showcase_mode:
+                print(f"[SHOWCASE] action_sample seg={segment_idx} seed={segment_seed} actions={first_actions}")
 
             return output_path.exists() and frames_written > 0
 
@@ -801,6 +858,16 @@ class PostTrainingVideoGenerator:
 
         # Convert RGB to BGR for OpenCV (game_frame is RGB from render())
         enhanced_frame = cv2.cvtColor(enhanced_frame, cv2.COLOR_RGB2BGR)
+
+        # Overlay showcase metadata if enabled
+        if self.showcase_mode:
+            banner = (
+                f"mode=showcase stochastic={analytics.get('showcase_stochastic', False)} "
+                f"epsilon={analytics.get('showcase_epsilon', self.showcase_exploration_rate):.2f} "
+                f"seed={analytics.get('segment_seed', self.showcase_seed_base)} "
+                f"segment={analytics.get('segment_idx', 0)}"
+            )
+            cv2.putText(enhanced_frame, banner, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
 
         return enhanced_frame
 
