@@ -9,8 +9,14 @@ from tools.retro_ml_desktop.ml_database import MetricsDatabase
 
 def verify_episode_tracking(run_id: str = "run-54d8ae4e"):
     """Verify episode tracking in training data."""
+    from pathlib import Path
+    from tools.retro_ml_desktop.config_manager import ConfigManager
 
-    db = MetricsDatabase()
+    project_root = Path(__file__).parent
+    config_manager = ConfigManager(project_root)
+    db_path = str(config_manager.get_database_path())
+
+    db = MetricsDatabase(db_path)
     
     print(f"\n{'='*70}")
     print(f"EPISODE TRACKING VERIFICATION - {run_id}")

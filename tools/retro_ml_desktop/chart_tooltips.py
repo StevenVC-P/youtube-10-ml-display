@@ -156,25 +156,36 @@ class InteractiveTooltip:
         Args:
             ax: Matplotlib axes
         """
-        # Remove annotation
+        # Hide annotation instead of removing (avoids matplotlib errors)
         if self.tooltip_annotation:
-            self.tooltip_annotation.remove()
-            self.tooltip_annotation = None
+            try:
+                self.tooltip_annotation.set_visible(False)
+            except Exception:
+                pass  # Ignore if already removed
 
         # Remove crosshair
         if ax in self.crosshair_lines:
-            vline, hline = self.crosshair_lines[ax]
-            vline.remove()
-            hline.remove()
-            del self.crosshair_lines[ax]
+            try:
+                vline, hline = self.crosshair_lines[ax]
+                vline.remove()
+                hline.remove()
+                del self.crosshair_lines[ax]
+            except Exception:
+                pass
 
         # Remove highlight
         if ax in self.highlight_points:
-            self.highlight_points[ax].remove()
-            del self.highlight_points[ax]
+            try:
+                self.highlight_points[ax].remove()
+                del self.highlight_points[ax]
+            except Exception:
+                pass
 
         # Redraw canvas
-        self.plotter.canvas.draw_idle()
+        try:
+            self.plotter.canvas.draw_idle()
+        except Exception:
+            pass
 
     def _show_crosshair(self, ax, x, y):
         """

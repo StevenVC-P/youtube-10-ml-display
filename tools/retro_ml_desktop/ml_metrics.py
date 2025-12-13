@@ -142,17 +142,23 @@ class ExperimentRun:
     Represents a single training run with all associated data
     for comprehensive analysis and comparison.
     """
-    # Core identifiers
+    # Core identifiers (required fields first)
     run_id: str
     experiment_name: str
-    
-    # Timing
     start_time: datetime
+
+    # Optional identifiers
+    custom_name: Optional[str] = None
+    leg_number: int = 1
+    base_run_id: Optional[str] = None
+
+    # Timing
     end_time: Optional[datetime] = None
-    
+
     # Status tracking
     status: str = "running"  # running, paused, stopped, completed, failed
     current_timestep: int = 0
+    leg_start_timestep: int = 0  # Timestep where this leg started
     
     # Configuration
     config: ExperimentConfig = None
@@ -175,6 +181,7 @@ class ExperimentRun:
     
     # Notes and tags
     description: Optional[str] = None
+    status_note: Optional[str] = None
     tags: Optional[List[str]] = None
     
     def to_dict(self) -> Dict[str, Any]:

@@ -98,8 +98,11 @@ def main():
     logger.info("Starting Automated Training Runs")
     logger.info("=" * 80)
 
-    # Initialize managers
-    db = MetricsDatabase('ml_experiments.db')
+    # Initialize managers with correct database path
+    from tools.retro_ml_desktop.config_manager import ConfigManager
+    config_manager = ConfigManager(project_root)
+    db_path = str(config_manager.get_database_path())
+    db = MetricsDatabase(db_path)
     process_manager = ProcessManager(project_root=str(project_root))
     process_manager.set_database(db)  # Phase 1: Initialize Experiment Manager
     

@@ -335,12 +335,16 @@ def train_agent(
             print("[Training] Using checkpoint-only mode (no video recording during training)")
     else:
         # Production mode: Record videos during training
+        # Get custom name from config if available
+        custom_name = config.get('train', {}).get('custom_name')
+
         epic_journey_callback = MLAnalyticsVideoCallback(
             config=config,
             milestones_pct=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],  # 10 milestones = 10 hours
             clip_seconds=epic_clip_seconds,  # Use config setting (default 3600 for epic, 10 for desktop)
             fps=30,
-            verbose=verbose
+            verbose=verbose,
+            custom_name=custom_name
         )
         callbacks.append(epic_journey_callback)
 

@@ -44,7 +44,8 @@ class MLAnalyticsVideoCallback(BaseCallback):
         milestones_pct: List[float],
         clip_seconds: int = 90,
         fps: int = 30,
-        verbose: int = 1
+        verbose: int = 1,
+        custom_name: str = None
     ):
         super().__init__(verbose)
         self.config = config
@@ -52,11 +53,12 @@ class MLAnalyticsVideoCallback(BaseCallback):
         self.clip_seconds = clip_seconds
         self.fps = fps
         self.total_timesteps = config['train']['total_timesteps']
-        
+        self.custom_name = custom_name  # Store custom name for video overlays
+
         # Video output settings
         self.output_dir = Path(config['paths']['videos_milestones'])
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Algorithm info
         self.algo_name = config['train']['algo'].lower()
         
@@ -525,8 +527,11 @@ class MLAnalyticsVideoCallback(BaseCallback):
             net_width = 440
             net_height = 220
 
-            # Title with realistic naming
-            cv2.putText(panel, "BREAKOUT - DQN Neural Activity Viewer", (int(net_x), int(net_y - 5)),
+            # Title with custom name or default
+            game_name = self.config.get('game', {}).get('env_id', 'BREAKOUT').split('/')[-1].upper()
+            display_name = self.custom_name if self.custom_name else game_name
+            title = f"{display_name} - {self.algo_name.upper()} Neural Activity Viewer"
+            cv2.putText(panel, title, (int(net_x), int(net_y - 5)),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
             # Subtitle with training parameters
