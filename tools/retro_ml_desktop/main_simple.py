@@ -10,6 +10,8 @@ import sys
 import yaml
 import threading
 import logging
+import subprocess
+import psutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -40,6 +42,7 @@ from tools.retro_ml_desktop.video_player import VideoPlayerDialog, play_video_wi
 from tools.retro_ml_desktop.ml_database import MetricsDatabase
 from tools.retro_ml_desktop.ml_collector import MetricsCollector
 from tools.retro_ml_desktop.ml_dashboard import MLDashboard
+from tools.retro_ml_desktop.run_supervisor import LOG_PATH as SUPERVISOR_LOG_PATH
 from tools.retro_ml_desktop.cuda_diagnostics import CUDADiagnostics, create_user_friendly_error_message
 from tools.retro_ml_desktop.widgets import (
     RecentActivityWidget,
@@ -138,6 +141,44 @@ class RetroMLSimple:
         
         # Refresh processes initially
         self._refresh_processes()
+
+        # Start supervisor to keep runs alive if UI exits
+        self._ensure_supervisor_running()
+
+    def _ensure_supervisor_running(self):
+        """Start run supervisor if not already running."""
+        try:
+            for proc in psutil.process_iter(["pid", "cmdline"]):
+                cmdline = proc.info.get("cmdline") or []
+                joined = " ".join(cmdline).lower()
+                if "tools.retro_ml_desktop.run_supervisor" in joined or "run_supervisor.py" in joined:
+                    return
+        except Exception:
+            # If detection fails, fall back to attempting start
+            pass
+
+        try:
+            cmd = [
+                sys.executable,
+                "-m",
+                "tools.retro_ml_desktop.run_supervisor",
+                "--db",
+                str(self.ml_database.db_path),
+            ]
+            creationflags = 0
+            close_fds = True
+            if sys.platform == "win32":
+                creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+                close_fds = False
+            subprocess.Popen(
+                cmd,
+                cwd=str(self.project_root),
+                creationflags=creationflags,
+                close_fds=close_fds,
+            )
+            self._append_log(f"[supervisor] started background supervisor; log: {SUPERVISOR_LOG_PATH}")
+        except Exception as e:
+            self._append_log(f"[supervisor] failed to start: {e}")
     
     def _load_presets(self):
         """Load training presets from YAML file."""
@@ -1222,14 +1263,39 @@ class RetroMLSimple:
 
         if progress_info['training']:
             training = progress_info['training']
-            training_text = (
-                f"📊 Timesteps: {training['current_steps']:,} / {training['total_steps']:,} "
-                f"({training['progress_pct']:.1f}%)\n"
-                f"⏱️ ETA: {training['eta']}\n"
-                f"🎯 Current Reward: {training['current_reward']}\n"
-                f"⚡ FPS: {training['fps']}\n"
-                f"💾 Checkpoints: {training['checkpoints_saved']}"
-            )
+
+            # Check if we have leg information
+            if 'leg_number' in training and training['leg_number'] > 1:
+                # Multi-leg run - show both leg progress and total progress
+                training_text = (
+                    f"📊 Leg {training['leg_number']} Progress: {training['leg_steps_completed']:,} / {training['leg_total_steps']:,} "
+                    f"({training['progress_pct']:.1f}%)\n"
+                    f"🎯 Total Progress: {training['total_timesteps_all_legs']:,} timesteps completed\n"
+                    f"⏱️ ETA: {training['eta']}\n"
+                    f"🎯 Current Reward: {training['current_reward']}\n"
+                    f"⚡ FPS: {training['fps']}\n"
+                    f"💾 Checkpoints: {training['checkpoints_saved']}"
+                )
+            elif 'leg_number' in training:
+                # First leg - show simpler display
+                training_text = (
+                    f"📊 Progress: {training['current_steps']:,} / {training['total_steps']:,} "
+                    f"({training['progress_pct']:.1f}%)\n"
+                    f"⏱️ ETA: {training['eta']}\n"
+                    f"🎯 Current Reward: {training['current_reward']}\n"
+                    f"⚡ FPS: {training['fps']}\n"
+                    f"💾 Checkpoints: {training['checkpoints_saved']}"
+                )
+            else:
+                # Fallback for runs without leg tracking
+                training_text = (
+                    f"📊 Timesteps: {training['current_steps']:,} / {training['total_steps']:,} "
+                    f"({training['progress_pct']:.1f}%)\n"
+                    f"⏱️ ETA: {training['eta']}\n"
+                    f"🎯 Current Reward: {training['current_reward']}\n"
+                    f"⚡ FPS: {training['fps']}\n"
+                    f"💾 Checkpoints: {training['checkpoints_saved']}"
+                )
         else:
             training_text = "⏳ Training progress not available (starting up...)"
 
@@ -1445,11 +1511,54 @@ class RetroMLSimple:
                         if reward_match:
                             training_info['current_reward'] = f"{float(reward_match.group(1)):.2f}"
 
-                # Only calculate progress percentage if we didn't already get it from logs
-                # This prevents overwriting the accurate percentage from the training script
-                if training_info['progress_pct'] == 0.0:
-                    if training_info['current_steps'] > 0 and training_info['total_steps'] > 0:
-                        training_info['progress_pct'] = (training_info['current_steps'] / training_info['total_steps']) * 100
+                # Get leg information from database to calculate proper progress
+                try:
+                    run_id = process.id
+                    leg_start_timestep = 0
+                    leg_number = 1
+
+                    # Query database for leg information
+                    if hasattr(self, 'ml_database'):
+                        conn = self.ml_database.connection
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "SELECT leg_start_timestep, leg_number FROM experiment_runs WHERE run_id = ?",
+                            (run_id,)
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            leg_start_timestep = row[0] if row[0] else 0
+                            leg_number = row[1] if row[1] else 1
+
+                        # Always store leg number for display
+                        training_info['leg_number'] = leg_number
+                        training_info['leg_start_timestep'] = leg_start_timestep
+
+                    # Calculate leg-specific progress
+                    # Leg progress = (current - leg_start) / total * 100
+                    if training_info['current_steps'] >= leg_start_timestep and training_info['total_steps'] > 0:
+                        leg_steps_completed = training_info['current_steps'] - leg_start_timestep
+                        leg_total_steps = training_info['total_steps']
+
+                        if leg_total_steps > 0:
+                            leg_progress_pct = (leg_steps_completed / leg_total_steps) * 100
+                            # Cap at 100%
+                            training_info['progress_pct'] = min(100.0, leg_progress_pct)
+
+                        # Store additional info for display
+                        training_info['leg_steps_completed'] = leg_steps_completed
+                        training_info['leg_total_steps'] = leg_total_steps
+                        training_info['total_timesteps_all_legs'] = training_info['current_steps']
+                    elif training_info['progress_pct'] == 0.0:
+                        # Fallback if we can't calculate leg progress
+                        if training_info['current_steps'] > 0 and training_info['total_steps'] > 0:
+                            training_info['progress_pct'] = min(100.0, (training_info['current_steps'] / training_info['total_steps']) * 100)
+                except Exception as e:
+                    print(f"Error calculating leg progress: {e}")
+                    # Fallback to simple calculation
+                    if training_info['progress_pct'] == 0.0:
+                        if training_info['current_steps'] > 0 and training_info['total_steps'] > 0:
+                            training_info['progress_pct'] = min(100.0, (training_info['current_steps'] / training_info['total_steps']) * 100)
 
         except Exception as e:
             print(f"Error parsing training logs for {process.id}: {e}")
@@ -2524,12 +2633,24 @@ class RetroMLSimple:
             runs_listbox = tk.Listbox(selection_frame, height=6)  # Reduced from 8 to 6
             runs_listbox.pack(fill="x", padx=10, pady=5)
 
-            # Populate runs
+            # Populate runs with custom names from database
             run_data = []
             for run_dir in sorted(run_dirs, key=lambda d: d.stat().st_mtime, reverse=True):
                 video_count = len(list(run_dir.glob("*.mp4")))
-                run_data.append({'id': run_dir.name, 'dir': run_dir, 'video_count': video_count})
-                runs_listbox.insert(tk.END, f"{run_dir.name} ({video_count} videos)")
+                run_id = run_dir.name
+
+                # Look up custom name from database
+                display_name = run_id
+                try:
+                    runs = self.ml_database.get_experiment_runs()
+                    matching_run = next((r for r in runs if r.run_id == run_id), None)
+                    if matching_run and matching_run.custom_name:
+                        display_name = matching_run.custom_name
+                except Exception:
+                    pass  # Fall back to run_id if database lookup fails
+
+                run_data.append({'id': run_id, 'dir': run_dir, 'video_count': video_count, 'display_name': display_name})
+                runs_listbox.insert(tk.END, f"{display_name} ({video_count} videos)")
 
             # Speed settings
             speed_frame = ctk.CTkFrame(main_container)
@@ -2873,7 +2994,9 @@ class RetroMLSimple:
                 extra_args=preset.get('extra_args', []),
                 custom_output_path=config.get('output_path'),
                 resume_from_checkpoint=config.get('resume_checkpoint'),
-                target_hours=config.get('target_hours')
+                target_hours=config.get('target_hours'),
+                hyperparameters=config.get('hyperparameters'),
+                custom_name=config.get('custom_name')
             )
 
             # Create experiment run in ML database
@@ -2916,14 +3039,22 @@ class RetroMLSimple:
         try:
             from .ml_metrics import ExperimentRun, ExperimentConfig
 
+            # Get hyperparameters from config or use defaults
+            hyperparams = config.get('hyperparameters', {})
+
             # Create experiment configuration
             experiment_config = ExperimentConfig(
                 algorithm=config['algorithm'],
                 policy_type="CnnPolicy",  # Default for Atari
-                learning_rate=0.0003,  # Default PPO learning rate
-                batch_size=256,  # Default batch size
-                n_steps=128,  # Default n_steps
-                gamma=0.99,  # Default discount factor
+                learning_rate=hyperparams.get('learning_rate', 0.00025),
+                batch_size=hyperparams.get('batch_size', 256),
+                n_steps=hyperparams.get('n_steps', 128),
+                gamma=hyperparams.get('gamma', 0.99),
+                gae_lambda=hyperparams.get('gae_lambda', 0.95),
+                clip_range=hyperparams.get('clip_range', 0.1),
+                ent_coef=hyperparams.get('ent_coef', 0.01),
+                vf_coef=hyperparams.get('vf_coef', 0.5),
+                max_grad_norm=hyperparams.get('max_grad_norm', 0.5),
                 env_id=config['game'],
                 n_envs=preset['vec_envs'],
                 frame_stack=4,  # Default for Atari
@@ -2935,15 +3066,29 @@ class RetroMLSimple:
                 seed=42  # Default seed
             )
 
+            # Build experiment display name
+            game_short_name = config['game'].split('/')[-1].replace('NoFrameskip-v4', '').replace('-v5', '')
+            custom_name = config.get('custom_name')
+            leg_number = config.get('leg_number', 1)
+
+            if custom_name:
+                experiment_name = f"{custom_name} - {game_short_name} - leg {leg_number}"
+            else:
+                experiment_name = f"{config['algorithm']}-{game_short_name} - leg {leg_number}"
+
             # Create experiment run
             experiment_run = ExperimentRun(
                 run_id=process_id,
-                experiment_name=f"{config['algorithm']}-{config['game'].split('/')[-1]}",
+                experiment_name=experiment_name,
+                custom_name=config.get('custom_name'),
+                leg_number=leg_number,
+                base_run_id=config.get('base_run_id'),
                 start_time=datetime.now(),
                 status="running",
+                leg_start_timestep=config.get('leg_start_timestep', 0),
                 config=experiment_config,
-                description=f"Training {config['algorithm']} on {config['game']} for {config.get('total_timesteps', preset['total_timesteps']):,} timesteps",
-                tags=[config['algorithm'], config['game'].split('/')[-1], "auto-generated"]
+                description=f"Training {config['algorithm']} on {config['game']} for {config.get('total_timesteps', preset['total_timesteps']):,} timesteps (Leg {leg_number})",
+                tags=[config['algorithm'], config['game'].split('/')[-1], "auto-generated", f"leg-{leg_number}"]
             )
 
             # Store in database
@@ -2981,6 +3126,59 @@ class RetroMLSimple:
         except Exception as e:
             print(f"❌ Error creating experiment run: {e}")
             self._append_log(f"Warning: Failed to create ML experiment tracking: {e}")
+    
+    def _show_exit_prompt(self) -> str:
+        """Prompt user when active runs exist. Returns 'keep', 'pause', or 'cancel'."""
+        choice = {"value": "cancel"}
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Close Retro ML Desktop")
+        dialog.geometry("420x200")
+        dialog.grab_set()
+        dialog.lift()
+        dialog.attributes("-topmost", True)
+
+        label = ctk.CTkLabel(
+            dialog,
+            text="Active training is in progress. What do you want to do?",
+            wraplength=380,
+            font=ctk.CTkFont(size=14, weight="bold"),
+        )
+        label.pack(pady=(20, 15), padx=20)
+
+        buttons_frame = ctk.CTkFrame(dialog)
+        buttons_frame.pack(pady=5, padx=20, fill="x")
+
+        def set_choice(val: str):
+            choice["value"] = val
+            dialog.destroy()
+
+        keep_btn = ctk.CTkButton(
+            buttons_frame,
+            text="Keep training running (recommended)",
+            command=lambda: set_choice("keep"),
+            height=36,
+        )
+        keep_btn.pack(fill="x", pady=4)
+
+        pause_btn = ctk.CTkButton(
+            buttons_frame,
+            text="Pause runs, then exit",
+            command=lambda: set_choice("pause"),
+            height=36,
+        )
+        pause_btn.pack(fill="x", pady=4)
+
+        cancel_btn = ctk.CTkButton(
+            buttons_frame,
+            text="Cancel",
+            command=lambda: set_choice("cancel"),
+            height=32,
+        )
+        cancel_btn.pack(fill="x", pady=4)
+
+        self.root.wait_window(dialog)
+        return choice["value"]
 
     def on_closing(self):
         """Handle application close event."""
@@ -3009,16 +3207,28 @@ class RetroMLSimple:
                 ))
 
         if running_processes:
-            # Show confirmation dialog
-            from tools.retro_ml_desktop.close_confirmation_dialog import show_close_confirmation
-            result = show_close_confirmation(self.root, running_processes)
+            result = self._show_exit_prompt()
 
             if result == "cancel":
                 return  # Don't close
             elif result == "pause":
                 self.pause_all_training()
-            elif result == "stop":
-                self.stop_all_training()
+                timestamp = datetime.now().isoformat()
+                for proc in running_processes:
+                    note = f"ui_exit_pause: UI closed at {timestamp}, run paused"
+                    try:
+                        self.ml_database.append_status_note(proc.id, note)
+                    except Exception as e:
+                        self._append_log(f"[exit] failed to append note for {proc.id}: {e}")
+            elif result == "keep":
+                self._ensure_supervisor_running()
+                timestamp = datetime.now().isoformat()
+                for proc in running_processes:
+                    note = f"ui_exit_keep_running: UI closed at {timestamp}, run left active"
+                    try:
+                        self.ml_database.append_status_note(proc.id, note)
+                    except Exception as e:
+                        self._append_log(f"[exit] failed to append note for {proc.id}: {e}")
 
         # Close the application
         self.cleanup_and_exit()
@@ -3323,63 +3533,118 @@ class StartTrainingDialog:
         # Create dialog window
         self.dialog = ctk.CTkToplevel(parent)
         self.dialog.title("🎮 Start AI Training")
-        self.dialog.geometry("600x750")
+        self.dialog.geometry("900x800")
         self.dialog.transient(parent)
         self.dialog.grab_set()
         self.dialog.resizable(True, True)
-        self.dialog.minsize(550, 700)  # Ensure minimum size for button visibility
+        self.dialog.minsize(800, 700)  # Ensure minimum size for button visibility
 
         # Center the dialog
         self.dialog.update_idletasks()
-        x = (self.dialog.winfo_screenwidth() // 2) - (600 // 2)
-        y = (self.dialog.winfo_screenheight() // 2) - (750 // 2)
-        self.dialog.geometry(f"600x750+{x}+{y}")
+        x = (self.dialog.winfo_screenwidth() // 2) - (900 // 2)
+        y = (self.dialog.winfo_screenheight() // 2) - (800 // 2)
+        self.dialog.geometry(f"900x800+{x}+{y}")
 
         self._create_dialog_ui()
     
     def _create_dialog_ui(self):
         """Create the dialog UI."""
-        # Main frame (simple, no scrolling for now)
-        main_frame = ctk.CTkFrame(self.dialog)
-        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        # Create scrollable frame for content
+        scrollable_frame = ctk.CTkScrollableFrame(self.dialog)
+        scrollable_frame.pack(fill="both", expand=True, padx=15, pady=15)
+
+        # Main content frame
+        main_frame = ctk.CTkFrame(scrollable_frame)
+        main_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
         # Title
         title_label = ctk.CTkLabel(main_frame, text="🎮 Start New AI Training",
                                   font=ctk.CTkFont(size=20, weight="bold"))
-        title_label.pack(pady=(0, 20))
+        title_label.pack(pady=(0, 15))
 
-        # Gaming System Selection
-        system_frame = ctk.CTkFrame(main_frame)
-        system_frame.pack(fill="x", pady=(0, 15))
+        # === SECTION 1: Game Selection (2-column layout) ===
+        game_selection_frame = ctk.CTkFrame(main_frame)
+        game_selection_frame.pack(fill="x", pady=(0, 10))
 
-        ctk.CTkLabel(system_frame, text="🕹️ Gaming System:",
-                    font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", pady=(10, 5), padx=10)
+        # Gaming System (left column)
+        system_col = ctk.CTkFrame(game_selection_frame)
+        system_col.pack(side="left", fill="both", expand=True, padx=(10, 5), pady=10)
+
+        ctk.CTkLabel(system_col, text="🕹️ Gaming System:",
+                    font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 5))
 
         self.system_var = tk.StringVar(value="Atari")
         system_options = ["Atari", "Classic Control", "Box2D"]
-        system_combo = ctk.CTkOptionMenu(system_frame, variable=self.system_var,
+        system_combo = ctk.CTkOptionMenu(system_col, variable=self.system_var,
                                        values=system_options, command=self._on_system_changed)
-        system_combo.pack(fill="x", padx=10, pady=(0, 10))
+        system_combo.pack(fill="x", pady=(0, 5))
 
-        # Game Selection
-        game_frame = ctk.CTkFrame(main_frame)
-        game_frame.pack(fill="x", pady=(0, 15))
+        # Game Selection (right column)
+        game_col = ctk.CTkFrame(game_selection_frame)
+        game_col.pack(side="left", fill="both", expand=True, padx=(5, 10), pady=10)
 
-        ctk.CTkLabel(game_frame, text="🎯 Choose Your Game:",
-                    font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", pady=(10, 5), padx=10)
+        ctk.CTkLabel(game_col, text="🎯 Choose Your Game:",
+                    font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 5))
 
         # Initialize game options based on system
         self.game_var = tk.StringVar()
-        self.game_combo = ctk.CTkOptionMenu(game_frame, variable=self.game_var, values=[""],
+        self.game_combo = ctk.CTkOptionMenu(game_col, variable=self.game_var, values=[""],
                                            command=self._on_game_changed)
-        self.game_combo.pack(fill="x", padx=10, pady=(0, 10))
+        self.game_combo.pack(fill="x", pady=(0, 5))
 
-        # Run Mode Selection (New vs Continue)
+        # Separator
+        ctk.CTkFrame(main_frame, height=2, fg_color="gray30").pack(fill="x", pady=5)
+
+        # === SECTION 2: Experiment Configuration (2-column layout) ===
+        config_frame = ctk.CTkFrame(main_frame)
+        config_frame.pack(fill="x", pady=(0, 10))
+
+        # Experiment Name (left column)
+        name_col = ctk.CTkFrame(config_frame)
+        name_col.pack(side="left", fill="both", expand=True, padx=(10, 5), pady=10)
+
+        ctk.CTkLabel(name_col, text="✏️ Experiment Name (Optional):",
+                    font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 5))
+
+        self.custom_name_var = tk.StringVar(value="")
+        self.name_entry = ctk.CTkEntry(name_col, textvariable=self.custom_name_var,
+                                  placeholder_text="e.g., 'high-exploration-test'")
+        self.name_entry.pack(fill="x", pady=(0, 2))
+
+        name_info = ctk.CTkLabel(name_col,
+                                text="Auto format: name - game - leg 1",
+                                font=ctk.CTkFont(size=9),
+                                text_color="gray")
+        name_info.pack(anchor="w", pady=(0, 5))
+
+        # Algorithm Selection (right column)
+        algo_col = ctk.CTkFrame(config_frame)
+        algo_col.pack(side="left", fill="both", expand=True, padx=(5, 10), pady=10)
+
+        ctk.CTkLabel(algo_col, text="🤖 AI Algorithm:",
+                    font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 5))
+
+        self.algo_var = tk.StringVar(value="PPO")
+        algorithm_combo = ctk.CTkOptionMenu(algo_col, variable=self.algo_var,
+                                           values=["PPO", "DQN"])
+        algorithm_combo.pack(fill="x", pady=(0, 2))
+
+        # Algorithm info label
+        algo_info = ctk.CTkLabel(algo_col,
+                                text="PPO: Best for most | DQN: Breakout",
+                                font=ctk.CTkFont(size=9),
+                                text_color="gray")
+        algo_info.pack(anchor="w", pady=(0, 5))
+
+        # Separator
+        ctk.CTkFrame(main_frame, height=2, fg_color="gray30").pack(fill="x", pady=5)
+
+        # === SECTION 3: Training Mode ===
         run_mode_frame = ctk.CTkFrame(main_frame)
-        run_mode_frame.pack(fill="x", pady=(0, 15))
+        run_mode_frame.pack(fill="x", pady=(0, 10))
 
         ctk.CTkLabel(run_mode_frame, text="🔄 Training Mode:",
-                    font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", pady=(10, 5), padx=10)
+                    font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(10, 5), padx=10)
 
         self.run_mode_var = tk.StringVar(value="new")
 
@@ -3411,9 +3676,12 @@ class StartTrainingDialog:
                                           justify="left", font=ctk.CTkFont(size=11))
         self.run_info_label.pack(anchor="w", padx=10, pady=(0, 10))
 
-        # Video Length Selection (Hour/Minute Input)
+        # Separator
+        ctk.CTkFrame(main_frame, height=2, fg_color="gray30").pack(fill="x", pady=5)
+
+        # === SECTION 4: Training Duration ===
         video_frame = ctk.CTkFrame(main_frame)
-        video_frame.pack(fill="x", pady=(0, 15), padx=10)
+        video_frame.pack(fill="x", pady=(0, 10))
 
         ctk.CTkLabel(video_frame, text="🎬 Target Video Length:",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(10, 5), padx=10)
@@ -3465,9 +3733,158 @@ class StartTrainingDialog:
                                              text_color="gray")
         self.video_length_info.pack(anchor="w", padx=10, pady=(0, 10))
 
+        # Separator
+        ctk.CTkFrame(main_frame, height=2, fg_color="gray30").pack(fill="x", pady=5)
+
+        # === SECTION 5: Advanced Settings ===
+        hyperparams_frame = ctk.CTkFrame(main_frame)
+        hyperparams_frame.pack(fill="x", pady=(0, 10))
+
+        # Header with toggle button
+        header_frame = ctk.CTkFrame(hyperparams_frame)
+        header_frame.pack(fill="x", padx=10, pady=(10, 0))
+
+        self.show_hyperparams = tk.BooleanVar(value=False)
+        toggle_btn = ctk.CTkButton(header_frame, text="▶", width=30, height=24,
+                                   command=self._toggle_hyperparams,
+                                   **Theme.get_button_colors("secondary"))
+        toggle_btn.pack(side="left", padx=(0, 10))
+
+        ctk.CTkLabel(header_frame, text="⚙️ Training Hyperparameters (Optional)",
+                    font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+
+        # Hyperparameters container (initially hidden)
+        self.hyperparams_container = ctk.CTkFrame(hyperparams_frame)
+
+        # Create a grid layout for hyperparameters
+        grid_frame = ctk.CTkFrame(self.hyperparams_container)
+        grid_frame.pack(fill="x", padx=10, pady=10)
+
+        # Initialize hyperparameter variables with defaults
+        self.learning_rate_var = tk.StringVar(value="0.00025")  # 2.5e-4
+        self.batch_size_var = tk.StringVar(value="512")
+        self.n_steps_var = tk.StringVar(value="256")
+        self.ent_coef_var = tk.StringVar(value="0.01")
+        self.gamma_var = tk.StringVar(value="0.99")
+        self.gae_lambda_var = tk.StringVar(value="0.95")
+        self.clip_range_var = tk.StringVar(value="0.1")
+        self.vf_coef_var = tk.StringVar(value="0.5")
+        self.max_grad_norm_var = tk.StringVar(value="0.5")
+
+        # Store entry widgets for enabling/disabling
+        self.hyperparam_entries = []
+
+        # Row 0: Learning Rate and Batch Size
+        ctk.CTkLabel(grid_frame, text="Learning Rate:", font=ctk.CTkFont(size=11)).grid(
+            row=0, column=0, sticky="w", padx=(5, 10), pady=3)
+        entry = ctk.CTkEntry(grid_frame, textvariable=self.learning_rate_var, width=100)
+        entry.grid(row=0, column=1, sticky="w", padx=(0, 20), pady=3)
+        self.hyperparam_entries.append(entry)
+
+        ctk.CTkLabel(grid_frame, text="Batch Size:", font=ctk.CTkFont(size=11)).grid(
+            row=0, column=2, sticky="w", padx=(5, 10), pady=3)
+        entry = ctk.CTkEntry(grid_frame, textvariable=self.batch_size_var, width=100)
+        entry.grid(row=0, column=3, sticky="w", padx=(0, 5), pady=3)
+        self.hyperparam_entries.append(entry)
+
+        # Row 1: N Steps and Entropy Coefficient
+        ctk.CTkLabel(grid_frame, text="N Steps:", font=ctk.CTkFont(size=11)).grid(
+            row=1, column=0, sticky="w", padx=(5, 10), pady=3)
+        entry = ctk.CTkEntry(grid_frame, textvariable=self.n_steps_var, width=100)
+        entry.grid(row=1, column=1, sticky="w", padx=(0, 20), pady=3)
+        self.hyperparam_entries.append(entry)
+
+        ctk.CTkLabel(grid_frame, text="Entropy Coef:", font=ctk.CTkFont(size=11)).grid(
+            row=1, column=2, sticky="w", padx=(5, 10), pady=3)
+        entry = ctk.CTkEntry(grid_frame, textvariable=self.ent_coef_var, width=100)
+        entry.grid(row=1, column=3, sticky="w", padx=(0, 5), pady=3)
+        self.hyperparam_entries.append(entry)
+
+        # Row 2: Gamma and GAE Lambda
+        ctk.CTkLabel(grid_frame, text="Gamma:", font=ctk.CTkFont(size=11)).grid(
+            row=2, column=0, sticky="w", padx=(5, 10), pady=3)
+        entry = ctk.CTkEntry(grid_frame, textvariable=self.gamma_var, width=100)
+        entry.grid(row=2, column=1, sticky="w", padx=(0, 20), pady=3)
+        self.hyperparam_entries.append(entry)
+
+        ctk.CTkLabel(grid_frame, text="GAE Lambda:", font=ctk.CTkFont(size=11)).grid(
+            row=2, column=2, sticky="w", padx=(5, 10), pady=3)
+        entry = ctk.CTkEntry(grid_frame, textvariable=self.gae_lambda_var, width=100)
+        entry.grid(row=2, column=3, sticky="w", padx=(0, 5), pady=3)
+        self.hyperparam_entries.append(entry)
+
+        # Row 3: Clip Range and Value Coefficient
+        ctk.CTkLabel(grid_frame, text="Clip Range:", font=ctk.CTkFont(size=11)).grid(
+            row=3, column=0, sticky="w", padx=(5, 10), pady=3)
+        entry = ctk.CTkEntry(grid_frame, textvariable=self.clip_range_var, width=100)
+        entry.grid(row=3, column=1, sticky="w", padx=(0, 20), pady=3)
+        self.hyperparam_entries.append(entry)
+
+        ctk.CTkLabel(grid_frame, text="Value Coef:", font=ctk.CTkFont(size=11)).grid(
+            row=3, column=2, sticky="w", padx=(5, 10), pady=3)
+        entry = ctk.CTkEntry(grid_frame, textvariable=self.vf_coef_var, width=100)
+        entry.grid(row=3, column=3, sticky="w", padx=(0, 5), pady=3)
+        self.hyperparam_entries.append(entry)
+
+        # Row 4: Max Gradient Norm
+        ctk.CTkLabel(grid_frame, text="Max Grad Norm:", font=ctk.CTkFont(size=11)).grid(
+            row=4, column=0, sticky="w", padx=(5, 10), pady=3)
+        entry = ctk.CTkEntry(grid_frame, textvariable=self.max_grad_norm_var, width=100)
+        entry.grid(row=4, column=1, sticky="w", padx=(0, 20), pady=3)
+        self.hyperparam_entries.append(entry)
+
+        # Row 5: Preset buttons header
+        preset_header = ctk.CTkLabel(grid_frame, text="📋 Quick Presets:",
+                                     font=ctk.CTkFont(size=12, weight="bold"))
+        preset_header.grid(row=5, column=0, columnspan=4, sticky="w", padx=5, pady=(10, 3))
+
+        # Row 6: Preset buttons
+        preset_btn_container = ctk.CTkFrame(grid_frame)
+        preset_btn_container.grid(row=6, column=0, columnspan=4, sticky="ew", padx=5, pady=(0, 5))
+
+        presets_config = [
+            ("⚖️ Balanced", self._set_hyperparams_balanced, "Standard PPO settings"),
+            ("🔍 Explore", self._set_hyperparams_explore, "High exploration for discovery"),
+            ("🎯 Exploit", self._set_hyperparams_exploit, "Refine learned behaviors"),
+            ("⚡ Fast", self._set_hyperparams_fast, "Aggressive learning speed"),
+            ("🛡️ Stable", self._set_hyperparams_stable, "Conservative & stable")
+        ]
+
+        self.hyperparam_preset_buttons = []
+        for i, (label, command, description) in enumerate(presets_config):
+            btn = ctk.CTkButton(preset_btn_container, text=label, width=100, height=28,
+                               command=command,
+                               **Theme.get_button_colors("secondary"))
+            btn.grid(row=0, column=i, padx=3, pady=0)
+            self.hyperparam_preset_buttons.append(btn)
+
+        # Locked warning label (initially hidden)
+        self.hyperparam_locked_label = ctk.CTkLabel(
+            grid_frame,
+            text="🔒 Hyperparameters locked to match original run",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#FFA500"
+        )
+        # Will be shown when continuing a run
+
+        # Info labels
+        info_frame = ctk.CTkFrame(self.hyperparams_container)
+        info_frame.pack(fill="x", padx=10, pady=(3, 5))
+
+        info_lines = [
+            "💡 Balanced: Standard settings | 🔍 Explore: Discovery (fixes +20 plateau) | 🎯 Exploit: Refine policy",
+            "⚡ Fast: Quick iteration (unstable) | 🛡️ Stable: Conservative & reliable"
+        ]
+
+        for line in info_lines:
+            label = ctk.CTkLabel(info_frame, text=line,
+                               font=ctk.CTkFont(size=9),
+                               text_color="gray",
+                               anchor="w")
+            label.pack(anchor="w", padx=5, pady=0)
+
         # Initialize variables
         self.resource_config = None
-        self.algo_var = tk.StringVar(value="PPO")
         self.run_id_var = tk.StringVar(value=generate_run_id())
 
         # Use Documents folder or user's home directory for videos (cross-platform compatible)
@@ -3487,16 +3904,16 @@ class StartTrainingDialog:
 
         # Action Buttons (right after video length)
         button_frame = ctk.CTkFrame(main_frame)
-        button_frame.pack(fill="x", pady=(30, 20))
+        button_frame.pack(fill="x", pady=(15, 10))
 
         # Button instructions
         button_info = ctk.CTkLabel(button_frame, text="Ready to start training?",
                                   font=ctk.CTkFont(size=14, weight="bold"))
-        button_info.pack(pady=(15, 10))
+        button_info.pack(pady=(10, 8))
 
         # Button container
         btn_container = ctk.CTkFrame(button_frame)
-        btn_container.pack(fill="x", padx=20, pady=(0, 15))
+        btn_container.pack(fill="x", padx=20, pady=(0, 10))
 
         cancel_btn = ctk.CTkButton(btn_container, text="❌ Cancel", command=self._cancel,
                                   height=50, font=ctk.CTkFont(size=14, weight="bold"),
@@ -3522,14 +3939,77 @@ class StartTrainingDialog:
         """Get available gaming systems and their games."""
         return {
             "Atari": {
+                # Popular/Classic Games
                 "🎯 Breakout": "ALE/Breakout-v5",
                 "🏓 Pong": "ALE/Pong-v5",
                 "👾 Space Invaders": "ALE/SpaceInvaders-v5",
+                "🎮 Ms. Pac-Man": "ALE/MsPacman-v5",
                 "🚀 Asteroids": "ALE/Asteroids-v5",
-                "🎮 Pac-Man": "ALE/MsPacman-v5",
+
+                # Action/Shooter Games
+                "🔫 Assault": "ALE/Assault-v5",
+                "🎖️ Atlantis": "ALE/Atlantis-v5",
+                "👾 Alien": "ALE/Alien-v5",
+                "⭐ Asterix": "ALE/Asterix-v5",
+                "🎯 Battlezone": "ALE/BattleZone-v5",
+                "💥 BeamRider": "ALE/BeamRider-v5",
+                "🔴 Berzerk": "ALE/Berzerk-v5",
+                "🎰 Carnival": "ALE/Carnival-v5",
+                "🐛 Centipede": "ALE/Centipede-v5",
+                "🎪 Defender": "ALE/Defender-v5",
+                "👾 DemonAttack": "ALE/DemonAttack-v5",
+                "🚁 Gravitar": "ALE/Gravitar-v5",
+                "🎯 Phoenix": "ALE/Phoenix-v5",
+                "🎮 Robotank": "ALE/Robotank-v5",
+
+                # Adventure/Platform Games
+                "🏔️ Montezuma Revenge": "ALE/MontezumaRevenge-v5",
+                "🎮 Pitfall": "ALE/Pitfall-v5",
+                "🦘 Kangaroo": "ALE/Kangaroo-v5",
+                "🏃 Krull": "ALE/Krull-v5",
+                "🏰 Adventure": "ALE/Adventure-v5",
+
+                # Sports Games
+                "🏀 Basketball": "ALE/Basketball-v5",
+                "🎳 Bowling": "ALE/Bowling-v5",
+                "🏈 Football": "ALE/Football-v5",
+                "🏒 Ice Hockey": "ALE/IceHockey-v5",
+                "🎾 Tennis": "ALE/Tennis-v5",
+                "🏐 Volleyball": "ALE/Volleyball-v5",
+                "⚾ Video Pinball": "ALE/VideoPinball-v5",
+
+                # Racing Games
                 "🏎️ Enduro": "ALE/Enduro-v5",
+
+                # Underwater/Sea Games
+                "⚔️ Seaquest": "ALE/Seaquest-v5",
+                "🐟 Fishing Derby": "ALE/FishingDerby-v5",
+
+                # Maze/Puzzle Games
                 "🎪 Freeway": "ALE/Freeway-v5",
-                "⚔️ Seaquest": "ALE/Seaquest-v5"
+                "🧩 Amidar": "ALE/Amidar-v5",
+                "🎲 Venture": "ALE/Venture-v5",
+
+                # Beat-em-up Games
+                "🥊 Boxing": "ALE/Boxing-v5",
+                "⚔️ Kung Fu Master": "ALE/KungFuMaster-v5",
+
+                # Other Classic Games
+                "🎮 Qbert": "ALE/Qbert-v5",
+                "🌉 Riverraid": "ALE/Riverraid-v5",
+                "🎯 Zaxxon": "ALE/Zaxxon-v5",
+                "🎪 Solaris": "ALE/Solaris-v5",
+                "🎮 Frostbite": "ALE/Frostbite-v5",
+                "🎯 Gopher": "ALE/Gopher-v5",
+                "🎮 James Bond": "ALE/Jamesbond-v5",
+                "🎯 Name This Game": "ALE/NameThisGame-v5",
+                "🎮 Road Runner": "ALE/RoadRunner-v5",
+                "🎯 Star Gunner": "ALE/StarGunner-v5",
+                "🎮 Time Pilot": "ALE/TimePilot-v5",
+                "🎯 Tutankham": "ALE/Tutankham-v5",
+                "🎮 Up N Down": "ALE/UpNDown-v5",
+                "🎯 Wizard Of Wor": "ALE/WizardOfWor-v5",
+                "🎮 Yars Revenge": "ALE/YarsRevenge-v5"
             },
             "Classic Control": {
                 "🎯 CartPole": "CartPole-v1",
@@ -3585,6 +4065,154 @@ class StartTrainingDialog:
                 "milestones": 8
             }
 
+    def _toggle_hyperparams(self):
+        """Toggle hyperparameters visibility."""
+        if self.show_hyperparams.get():
+            self.hyperparams_container.pack_forget()
+            self.show_hyperparams.set(False)
+            # Update toggle button text
+            for child in self.dialog.winfo_children():
+                self._update_toggle_button_recursive(child, "▶")
+        else:
+            self.hyperparams_container.pack(fill="x", padx=10, pady=(0, 10))
+            self.show_hyperparams.set(True)
+            # Update toggle button text
+            for child in self.dialog.winfo_children():
+                self._update_toggle_button_recursive(child, "▼")
+
+    def _update_toggle_button_recursive(self, widget, text):
+        """Recursively find and update the toggle button text."""
+        try:
+            if isinstance(widget, ctk.CTkButton) and widget.cget("width") == 30:
+                widget.configure(text=text)
+                return
+            for child in widget.winfo_children():
+                self._update_toggle_button_recursive(child, text)
+        except:
+            pass
+
+    def _set_hyperparams_balanced(self):
+        """⚖️ Balanced: Standard PPO settings for most games."""
+        self.learning_rate_var.set("0.00025")
+        self.batch_size_var.set("512")
+        self.n_steps_var.set("256")
+        self.ent_coef_var.set("0.01")
+        self.gamma_var.set("0.99")
+        self.gae_lambda_var.set("0.95")
+        self.clip_range_var.set("0.1")
+        self.vf_coef_var.set("0.5")
+        self.max_grad_norm_var.set("0.5")
+
+    def _set_hyperparams_explore(self):
+        """🔍 Explore: High exploration for discovery (best for Breakout at +20 plateau)."""
+        self.learning_rate_var.set("0.00025")
+        self.batch_size_var.set("256")  # Smaller for more frequent updates
+        self.n_steps_var.set("256")
+        self.ent_coef_var.set("0.02")  # Doubled for more exploration
+        self.gamma_var.set("0.99")
+        self.gae_lambda_var.set("0.95")
+        self.clip_range_var.set("0.1")
+        self.vf_coef_var.set("0.5")
+        self.max_grad_norm_var.set("0.5")
+
+    def _set_hyperparams_exploit(self):
+        """🎯 Exploit: Low exploration, refine learned behaviors."""
+        self.learning_rate_var.set("0.0001")  # Lower for stability
+        self.batch_size_var.set("1024")  # Larger for smoother gradients
+        self.n_steps_var.set("256")
+        self.ent_coef_var.set("0.005")  # Reduced exploration
+        self.gamma_var.set("0.99")
+        self.gae_lambda_var.set("0.95")
+        self.clip_range_var.set("0.1")
+        self.vf_coef_var.set("0.5")
+        self.max_grad_norm_var.set("0.5")
+
+    def _set_hyperparams_fast(self):
+        """⚡ Fast: Aggressive learning for quick iteration."""
+        self.learning_rate_var.set("0.0005")  # 2x higher
+        self.batch_size_var.set("128")  # Small for rapid updates
+        self.n_steps_var.set("128")  # Smaller rollouts
+        self.ent_coef_var.set("0.01")
+        self.gamma_var.set("0.99")
+        self.gae_lambda_var.set("0.95")
+        self.clip_range_var.set("0.2")  # Larger for bigger updates
+        self.vf_coef_var.set("0.5")
+        self.max_grad_norm_var.set("1.0")  # Allow larger gradients
+
+    def _set_hyperparams_stable(self):
+        """🛡️ Stable: Conservative settings for stable training."""
+        self.learning_rate_var.set("0.0001")  # Conservative
+        self.batch_size_var.set("512")
+        self.n_steps_var.set("512")  # Longer rollouts
+        self.ent_coef_var.set("0.01")
+        self.gamma_var.set("0.99")
+        self.gae_lambda_var.set("0.95")
+        self.clip_range_var.set("0.05")  # Smaller for stability
+        self.vf_coef_var.set("0.5")
+        self.max_grad_norm_var.set("0.3")  # Clip gradients more aggressively
+
+    def _get_hyperparameters(self):
+        """Get hyperparameters from UI as a dictionary."""
+        try:
+            return {
+                'learning_rate': float(self.learning_rate_var.get()),
+                'batch_size': int(self.batch_size_var.get()),
+                'n_steps': int(self.n_steps_var.get()),
+                'ent_coef': float(self.ent_coef_var.get()),
+                'gamma': float(self.gamma_var.get()),
+                'gae_lambda': float(self.gae_lambda_var.get()),
+                'clip_range': float(self.clip_range_var.get()),
+                'vf_coef': float(self.vf_coef_var.get()),
+                'max_grad_norm': float(self.max_grad_norm_var.get())
+            }
+        except ValueError as e:
+            raise ValueError(f"Invalid hyperparameter value: {e}")
+
+    def _set_hyperparameters(self, hyperparams: Dict):
+        """Set hyperparameters in UI from a dictionary."""
+        if not hyperparams:
+            return
+
+        if 'learning_rate' in hyperparams:
+            self.learning_rate_var.set(str(hyperparams['learning_rate']))
+        if 'batch_size' in hyperparams:
+            self.batch_size_var.set(str(hyperparams['batch_size']))
+        if 'n_steps' in hyperparams:
+            self.n_steps_var.set(str(hyperparams['n_steps']))
+        if 'ent_coef' in hyperparams:
+            self.ent_coef_var.set(str(hyperparams['ent_coef']))
+        if 'gamma' in hyperparams:
+            self.gamma_var.set(str(hyperparams['gamma']))
+        if 'gae_lambda' in hyperparams:
+            self.gae_lambda_var.set(str(hyperparams['gae_lambda']))
+        if 'clip_range' in hyperparams:
+            self.clip_range_var.set(str(hyperparams['clip_range']))
+        if 'vf_coef' in hyperparams:
+            self.vf_coef_var.set(str(hyperparams['vf_coef']))
+        if 'max_grad_norm' in hyperparams:
+            self.max_grad_norm_var.set(str(hyperparams['max_grad_norm']))
+
+    def _lock_hyperparameters(self, locked: bool):
+        """Lock or unlock hyperparameter controls and custom name."""
+        state = "disabled" if locked else "normal"
+
+        # Disable/enable all hyperparameter entry fields
+        for entry in self.hyperparam_entries:
+            entry.configure(state=state)
+
+        # Disable/enable preset buttons
+        for btn in self.hyperparam_preset_buttons:
+            btn.configure(state=state)
+
+        # Disable/enable custom name field
+        self.name_entry.configure(state=state)
+
+        # Show/hide locked warning label
+        if locked:
+            self.hyperparam_locked_label.grid(row=7, column=0, columnspan=4, pady=(10, 5))
+        else:
+            self.hyperparam_locked_label.grid_forget()
+
     def _on_system_changed(self, system_name):
         """Handle gaming system selection change."""
         systems = self._get_game_systems()
@@ -3610,11 +4238,15 @@ class StartTrainingDialog:
             # Show previous runs dropdown
             self.previous_runs_frame.pack(fill="x", padx=10, pady=(0, 10))
             self._update_previous_runs()
+            # Lock hyperparameters to prevent accidental changes
+            self._lock_hyperparameters(True)
         else:
             # Hide previous runs dropdown
             self.previous_runs_frame.pack_forget()
             # Generate new run ID
             self.run_id_var.set(generate_run_id())
+            # Unlock hyperparameters for new runs
+            self._lock_hyperparameters(False)
 
     def _update_previous_runs(self):
         """Update the list of previous runs for the selected game."""
@@ -3675,6 +4307,26 @@ class StartTrainingDialog:
 
                 # Update run ID
                 self.run_id_var.set(run.run_id)
+
+                # Load custom name from previous run
+                if hasattr(run, 'custom_name') and run.custom_name:
+                    self.custom_name_var.set(run.custom_name)
+
+                # Load hyperparameters from previous run
+                if run.config:
+                    hyperparams = {
+                        'learning_rate': run.config.learning_rate,
+                        'batch_size': run.config.batch_size,
+                        'n_steps': run.config.n_steps,
+                        'ent_coef': run.config.ent_coef if run.config.ent_coef is not None else 0.01,
+                        'gamma': run.config.gamma,
+                        'gae_lambda': run.config.gae_lambda if run.config.gae_lambda is not None else 0.95,
+                        'clip_range': run.config.clip_range if run.config.clip_range is not None else 0.1,
+                        'vf_coef': run.config.vf_coef if run.config.vf_coef is not None else 0.5,
+                        'max_grad_norm': run.config.max_grad_norm if run.config.max_grad_norm is not None else 0.5
+                    }
+                    self._set_hyperparameters(hyperparams)
+                    print(f"✅ Loaded hyperparameters from previous run: {run.run_id}")
 
                 # Display run information
                 info_lines = []
@@ -3833,22 +4485,53 @@ class StartTrainingDialog:
             # Get algorithm (clean up the display name)
             algorithm = self.algo_var.get().lower()  # "PPO" -> "ppo"
 
-            # Determine if resuming from checkpoint
+            # Determine if resuming from checkpoint and handle run naming
             run_mode = self.run_mode_var.get()
             resume_checkpoint = None
+            custom_name = None
+            leg_number = 1
+            base_run_id = None
 
             if run_mode == "continue":
                 # Get the checkpoint path for the selected run
-                run_id = self.run_id_var.get()
-                checkpoint_path = Path(f"models/checkpoints/{run_id}/latest.zip")
+                old_run_id = self.run_id_var.get()
+                checkpoint_path = Path(f"models/checkpoints/{old_run_id}/latest.zip")
 
                 if checkpoint_path.exists():
                     resume_checkpoint = str(checkpoint_path)
                 else:
                     messagebox.showerror("Error",
-                                       f"Checkpoint not found for run {run_id}.\n"
+                                       f"Checkpoint not found for run {old_run_id}.\n"
                                        f"Expected: {checkpoint_path}")
                     return
+
+                # Get previous run info to increment leg and track starting timestep
+                leg_start_timestep = 0
+                if self.app and hasattr(self.app, 'process_manager') and hasattr(self.app.process_manager, 'ml_database'):
+                    ml_db = self.app.process_manager.ml_database
+                    conn = ml_db.connection
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT custom_name, leg_number, base_run_id, current_timestep FROM experiment_runs WHERE run_id = ?",
+                        (old_run_id,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        custom_name = row[0]
+                        old_leg = row[1] if row[1] else 1
+                        leg_number = old_leg + 1
+                        base_run_id = row[2] if row[2] else old_run_id  # Track original run
+                        leg_start_timestep = row[3] if row[3] else 0  # Capture where this leg starts
+
+                # Generate new run_id for this leg
+                run_id = generate_run_id()
+            else:
+                # New run - use custom name if provided
+                custom_name = self.custom_name_var.get().strip() if self.custom_name_var.get() else None
+                leg_number = 1
+                leg_start_timestep = 0  # First leg starts at 0
+                run_id = generate_run_id()
+                base_run_id = run_id  # First leg tracks itself
 
             # Format video length for display
             hours = int(video_config['target_hours'])
@@ -3860,6 +4543,9 @@ class StartTrainingDialog:
             else:
                 video_length_display = f"{minutes}m"
 
+            # Get hyperparameters from UI
+            hyperparameters = self._get_hyperparameters()
+
             # Build result configuration
             self.result = {
                 'preset': 'custom',  # Always use custom for simple interface
@@ -3867,7 +4553,11 @@ class StartTrainingDialog:
                 'game_display': game_display,
                 'system': system,
                 'algorithm': algorithm,
-                'run_id': self.run_id_var.get(),
+                'run_id': run_id,
+                'custom_name': custom_name,
+                'leg_number': leg_number,
+                'base_run_id': base_run_id,
+                'leg_start_timestep': leg_start_timestep,  # Track where this leg starts
                 'total_timesteps': video_config['timesteps'],
                 'target_hours': video_config['target_hours'],
                 'milestone_videos': video_config['milestones'],
@@ -3879,7 +4569,9 @@ class StartTrainingDialog:
                 # Use optimized resource configuration for faster training
                 'cpu_cores': 12,  # Increased from 4 to 12 cores
                 'memory_limit_gb': 16,
-                'gpu_id': 'auto'
+                'gpu_id': 'auto',
+                # Add hyperparameters
+                'hyperparameters': hyperparameters
             }
 
             self.dialog.destroy()

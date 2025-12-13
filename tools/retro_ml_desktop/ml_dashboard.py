@@ -428,9 +428,12 @@ class MLDashboard:
                 # Duration
                 duration = self._format_duration(run.duration)
 
+                # Use custom_name if available, otherwise use experiment_name
+                display_name = run.custom_name if run.custom_name else run.experiment_name
+
                 # Insert into tree
                 self.runs_tree.insert("", "end",
-                                     text=run.run_id[:12] + "...",
+                                     text=display_name,
                                      values=(f"{status_icon} {run.status.title()}",
                                             algorithm, game, gpu_display, progress, reward, duration),
                                      tags=(run.run_id,))
@@ -512,7 +515,13 @@ class MLDashboard:
     
     def _format_run_details(self, run: ExperimentRun) -> str:
         """Format run details for display."""
-        details = f"""🧪 Experiment: {run.experiment_name}
+        # Show custom name if available
+        name_line = f"""🧪 Experiment: {run.experiment_name}"""
+        if run.custom_name:
+            name_line = f"""🏷️ Name: {run.custom_name}
+🧪 Experiment: {run.experiment_name}"""
+
+        details = f"""{name_line}
 🆔 Run ID: {run.run_id}
 📅 Started: {run.start_time.strftime('%Y-%m-%d %H:%M:%S')}
 ⏱️ Duration: {self._format_duration(run.duration)}

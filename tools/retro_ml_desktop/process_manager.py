@@ -262,7 +262,9 @@ class ProcessManager:
         extra_args: Optional[List[str]] = None,
         custom_output_path: str = None,
         resume_from_checkpoint: str = None,
-        target_hours: float = None
+        target_hours: float = None,
+        hyperparameters: Optional[Dict[str, Any]] = None,
+        custom_name: str = None
     ) -> str:
         """
         Create and start a new training process.
@@ -279,6 +281,7 @@ class ProcessManager:
             custom_output_path: Custom output path for videos
             resume_from_checkpoint: Path to checkpoint to resume from (optional)
             target_hours: Target video length in hours (optional)
+            hyperparameters: Training hyperparameters (learning_rate, batch_size, etc.)
 
         Returns:
             Process ID
@@ -307,6 +310,16 @@ class ProcessManager:
         config_data['train']['total_timesteps'] = total_timesteps
         config_data['train']['vec_envs'] = vec_envs
         config_data['train']['save_freq'] = save_freq
+
+        # Add custom name to config for video overlays
+        if custom_name:
+            config_data['train']['custom_name'] = custom_name
+
+        # Apply hyperparameters if provided
+        if hyperparameters:
+            for key, value in hyperparameters.items():
+                config_data['train'][key] = value
+            print(f"✅ Applied hyperparameters: {hyperparameters}")
 
         # CRITICAL FIX: Disable video recording during training for desktop app
         # Set milestone_clip_seconds to 0 to skip video recording and use checkpoints instead
@@ -360,6 +373,7 @@ class ProcessManager:
         metadata_path = self.project_root / "models" / "checkpoints" / run_id / "run_metadata.json"
         metadata = {
             'run_id': run_id,
+            'custom_name': custom_name,
             'game': game,
             'algorithm': algorithm,
             'total_timesteps': total_timesteps,

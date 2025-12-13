@@ -11,6 +11,8 @@ import customtkinter as ctk
 from tkinter import messagebox
 import json
 
+UI_VERSION = "storage_cleaner v2"
+
 
 class StorageCleanupDialog:
     """Dialog for cleaning up old training data and videos."""
@@ -23,7 +25,7 @@ class StorageCleanupDialog:
         
         # Create dialog
         self.dialog = ctk.CTkToplevel(parent)
-        self.dialog.title("🗑️ Storage Cleanup")
+        self.dialog.title(f"Storage Cleanup ({UI_VERSION})")
         self.dialog.geometry("900x700")
         self.dialog.transient(parent)
         self.dialog.grab_set()
@@ -39,56 +41,77 @@ class StorageCleanupDialog:
     
     def _create_widgets(self):
         """Create the dialog widgets."""
-        # Main frame
         main_frame = ctk.CTkFrame(self.dialog)
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
-        
-        # Title
-        title_label = ctk.CTkLabel(main_frame, text="🗑️ Storage Cleanup Manager", 
-                                  font=ctk.CTkFont(size=20, weight="bold"))
-        title_label.pack(pady=(0, 10))
-        
-        # Storage summary
-        self.summary_label = ctk.CTkLabel(main_frame, text="Scanning storage...", 
-                                         font=ctk.CTkFont(size=12))
-        self.summary_label.pack(pady=(0, 20))
-        
-        # Run list
+
+        # Grid layout: header (0), runs scroll (1), bottom controls (2)
+        main_frame.grid_rowconfigure(0, weight=0)
+        main_frame.grid_rowconfigure(1, weight=1)
+        main_frame.grid_rowconfigure(2, weight=0)
+        main_frame.grid_columnconfigure(0, weight=1)
+
+        # Header
+        header = ctk.CTkFrame(main_frame, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(header, text=f"Storage Cleanup Manager ({UI_VERSION})",
+                     font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(0, 6))
+        self.summary_label = ctk.CTkLabel(header, text="Scanning storage...",
+                                          font=ctk.CTkFont(size=12))
+        self.summary_label.pack(pady=(0, 6))
+
+        # Runs list with scroll
         list_frame = ctk.CTkFrame(main_frame)
-        list_frame.pack(fill="both", expand=True, pady=(0, 10))
-        
-        ctk.CTkLabel(list_frame, text="Select runs to delete:", 
-                    font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(10, 5))
-        
-        # Scrollable frame for runs
-        self.runs_frame = ctk.CTkScrollableFrame(list_frame, height=400)
-        self.runs_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        
+        list_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        list_frame.grid_columnconfigure(0, weight=1)
+        list_frame.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(list_frame, text="Select runs to delete:",
+                     font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, sticky="w", pady=(10, 5), padx=10)
+        self.runs_frame = ctk.CTkScrollableFrame(list_frame)
+        self.runs_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+
+        # Bottom controls (fixed)
+        bottom = ctk.CTkFrame(main_frame)
+        bottom.grid(row=2, column=0, sticky="ew")
+        bottom.grid_columnconfigure(0, weight=1)
+
         # Selection buttons
-        select_frame = ctk.CTkFrame(main_frame)
-        select_frame.pack(fill="x", pady=(0, 10))
-        
-        ctk.CTkButton(select_frame, text="Select All", 
-                     command=self._select_all, width=100).pack(side="left", padx=5)
-        ctk.CTkButton(select_frame, text="Select None", 
-                     command=self._select_none, width=100).pack(side="left", padx=5)
-        ctk.CTkButton(select_frame, text="Select Old (>7 days)", 
-                     command=self._select_old, width=150).pack(side="left", padx=5)
-        
+        select_frame = ctk.CTkFrame(bottom, fg_color="transparent")
+        select_frame.pack(fill="x", pady=(0, 8))
+        ctk.CTkButton(select_frame, text="Select All",
+                      command=self._select_all, width=100).pack(side="left", padx=5)
+        ctk.CTkButton(select_frame, text="Select None",
+                      command=self._select_none, width=100).pack(side="left", padx=5)
+        ctk.CTkButton(select_frame, text="Select Old (>7 days)",
+                      command=self._select_old, width=150).pack(side="left", padx=5)
+
+        # Delete options (always visible)
+        options_frame = ctk.CTkFrame(bottom)
+        options_frame.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(options_frame, text="Delete options (and/or):", font=ctk.CTkFont(size=12, weight="bold")).pack(anchor="w", pady=(5, 2), padx=10)
+        self.delete_checkpoints_var = ctk.BooleanVar(value=True)
+        self.delete_outputs_var = ctk.BooleanVar(value=True)
+        self.delete_training_videos_var = ctk.BooleanVar(value=True)
+
+        options_inner = ctk.CTkFrame(options_frame, fg_color="transparent")
+        options_inner.pack(fill="x", padx=5, pady=(2, 6))
+        ctk.CTkCheckBox(options_inner, text="Delete checkpoints/models", variable=self.delete_checkpoints_var).pack(anchor="w", padx=10, pady=2)
+        ctk.CTkCheckBox(options_inner, text="Delete processed videos/outputs (outputs/, D:/ML_Videos)", variable=self.delete_outputs_var).pack(anchor="w", padx=10, pady=2)
+        ctk.CTkCheckBox(options_inner, text="Delete training recordings (video/training)", variable=self.delete_training_videos_var).pack(anchor="w", padx=10, pady=2)
+
         # Action buttons
-        button_frame = ctk.CTkFrame(main_frame)
-        button_frame.pack(fill="x")
-        
-        ctk.CTkButton(button_frame, text="🗑️ Delete Selected", 
-                     command=self._delete_selected,
-                     fg_color="#dc3545", hover_color="#c82333",
-                     width=150).pack(side="left", padx=5)
-        ctk.CTkButton(button_frame, text="🔄 Refresh", 
-                     command=self._scan_storage,
-                     width=100).pack(side="left", padx=5)
-        ctk.CTkButton(button_frame, text="Close", 
-                     command=self.dialog.destroy,
-                     width=100).pack(side="right", padx=5)
+        button_frame = ctk.CTkFrame(bottom, fg_color="transparent")
+        button_frame.pack(fill="x", pady=(0, 2))
+        ctk.CTkButton(button_frame, text="Delete Selected",
+                      command=self._delete_selected,
+                      fg_color="#dc3545", hover_color="#c82333",
+                      width=150).pack(side="left", padx=5)
+        ctk.CTkButton(button_frame, text="Refresh",
+                      command=self._scan_storage,
+                      width=100).pack(side="left", padx=5)
+        ctk.CTkButton(button_frame, text="Close",
+                      command=self.dialog.destroy,
+                      width=100).pack(side="right", padx=5)
     
     def _scan_storage(self):
         """Scan storage and populate the run list."""
@@ -156,7 +179,8 @@ class StorageCleanupDialog:
             if d_video_path.exists():
                 d_video_size = self._get_dir_size(d_video_path)
             
-            total_size = checkpoint_size + video_size + d_video_size
+            training_video_size = self._get_dir_size(self.project_root / "video" / "training" / run_id)
+            total_size = checkpoint_size + video_size + d_video_size + training_video_size
             
             # Count checkpoints
             milestones_dir = run_dir / "milestones"
@@ -170,13 +194,15 @@ class StorageCleanupDialog:
                 'algorithm': algorithm,
                 'created': created,
                 'checkpoint_size': checkpoint_size,
+                'training_video_size': training_video_size,
                 'video_size': video_size,
                 'd_video_size': d_video_size,
                 'total_size': total_size,
                 'checkpoint_count': checkpoint_count,
                 'run_dir': run_dir,
                 'video_dir': self.project_root / "outputs" / run_id,
-                'd_video_dir': d_video_path if d_video_path.exists() else None
+                'd_video_dir': d_video_path if d_video_path.exists() else None,
+                'training_video_dir': self.project_root / "video" / "training" / run_id
             }
         except Exception as e:
             print(f"Error getting info for {run_dir}: {e}")
@@ -267,14 +293,26 @@ class StorageCleanupDialog:
             messagebox.showwarning("No Selection", "Please select runs to delete.")
             return
         
-        # Calculate total size to delete
-        total_size = sum(r['total_size'] for r in self.run_data if r['run_id'] in self.selected_runs)
+        # Calculate total size to delete based on options
+        total_size = 0
+        for r in self.run_data:
+            if r['run_id'] in self.selected_runs:
+                if self.delete_checkpoints_var.get():
+                    total_size += r['checkpoint_size']
+                if self.delete_outputs_var.get():
+                    total_size += r['video_size'] + r['d_video_size']
+                if self.delete_training_videos_var.get():
+                    total_size += r['training_video_size']
         
         # Confirm deletion
         response = messagebox.askyesno(
             "Confirm Deletion",
             f"Delete {len(self.selected_runs)} training runs?\n\n"
             f"This will free up {self._format_size(total_size)}.\n\n"
+            f"Selected options:\n"
+            f"- Checkpoints/models: {'Yes' if self.delete_checkpoints_var.get() else 'No'}\n"
+            f"- Processed videos (outputs): {'Yes' if self.delete_outputs_var.get() else 'No'}\n"
+            f"- Training recordings: {'Yes' if self.delete_training_videos_var.get() else 'No'}\n\n"
             f"This action cannot be undone!"
         )
         
@@ -288,20 +326,29 @@ class StorageCleanupDialog:
         for run_info in self.run_data:
             if run_info['run_id'] in self.selected_runs:
                 try:
+                    run_freed = 0
                     # Delete checkpoint directory
-                    if run_info['run_dir'].exists():
+                    if self.delete_checkpoints_var.get() and run_info['run_dir'].exists():
                         shutil.rmtree(run_info['run_dir'])
+                        run_freed += run_info['checkpoint_size']
                     
-                    # Delete video directory
-                    if run_info['video_dir'].exists():
+                    # Delete processed video directory
+                    if self.delete_outputs_var.get() and run_info['video_dir'].exists():
                         shutil.rmtree(run_info['video_dir'])
+                        run_freed += run_info['video_size']
                     
                     # Delete D:\ML_Videos directory
-                    if run_info['d_video_dir'] and run_info['d_video_dir'].exists():
+                    if self.delete_outputs_var.get() and run_info['d_video_dir'] and run_info['d_video_dir'].exists():
                         shutil.rmtree(run_info['d_video_dir'])
+                        run_freed += run_info['d_video_size']
+
+                    # Delete training recordings
+                    if self.delete_training_videos_var.get() and run_info['training_video_dir'].exists():
+                        shutil.rmtree(run_info['training_video_dir'])
+                        run_freed += run_info['training_video_size']
                     
                     deleted_count += 1
-                    freed_space += run_info['total_size']
+                    freed_space += run_freed
                     
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to delete {run_info['run_id']}: {e}")
@@ -327,4 +374,3 @@ def show_storage_cleanup_dialog(parent, project_root: Path):
     """Show the storage cleanup dialog."""
     dialog = StorageCleanupDialog(parent, project_root)
     return dialog.show()
-

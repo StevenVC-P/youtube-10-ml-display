@@ -75,6 +75,9 @@ class MetricsDatabase:
                 CREATE TABLE IF NOT EXISTS experiment_runs (
                     run_id TEXT PRIMARY KEY,
                     experiment_name TEXT NOT NULL,
+                    custom_name TEXT,
+                    leg_number INTEGER DEFAULT 1,
+                    base_run_id TEXT,
                     start_time TEXT NOT NULL,
                     end_time TEXT,
                     status TEXT NOT NULL DEFAULT 'running',
@@ -91,14 +94,47 @@ class MetricsDatabase:
                     python_version TEXT,
                     dependencies_json TEXT,
                     description TEXT,
+                    status_note TEXT,
                     tags_json TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    heartbeat_at TEXT,
                     process_pid INTEGER,
                     process_paused INTEGER DEFAULT 0
                 )
             """)
-            
+
+            # Add new columns to existing databases (migration)
+            try:
+                conn.execute("ALTER TABLE experiment_runs ADD COLUMN custom_name TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            try:
+                conn.execute("ALTER TABLE experiment_runs ADD COLUMN leg_number INTEGER DEFAULT 1")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            try:
+                conn.execute("ALTER TABLE experiment_runs ADD COLUMN base_run_id TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            try:
+                conn.execute("ALTER TABLE experiment_runs ADD COLUMN leg_start_timestep INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            try:
+                conn.execute("ALTER TABLE experiment_runs ADD COLUMN status_note TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            try:
+                conn.execute("ALTER TABLE experiment_runs ADD COLUMN heartbeat_at TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
             # Training metrics table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS training_metrics (
@@ -267,22 +303,23 @@ class MetricsDatabase:
                 
                 conn.execute("""
                     INSERT OR REPLACE INTO experiment_runs (
-                        run_id, experiment_name, start_time, end_time, status,
-                        current_timestep, config_json, best_reward, final_reward,
+                        run_id, experiment_name, custom_name, leg_number, base_run_id,
+                        start_time, end_time, status,
+                        current_timestep, leg_start_timestep, config_json, best_reward, final_reward,
                         convergence_timestep, model_path, log_path, video_path,
                         tensorboard_path, git_commit, python_version,
-                        dependencies_json, description, tags_json, created_at,
+                        dependencies_json, description, status_note, tags_json, created_at,
                         updated_at, process_pid, process_paused
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    run.run_id, run.experiment_name,
+                    run.run_id, run.experiment_name, run.custom_name, run.leg_number, run.base_run_id,
                     run.start_time.isoformat(),
                     run.end_time.isoformat() if run.end_time else None,
-                    run.status, run.current_timestep, config_json,
+                    run.status, run.current_timestep, run.leg_start_timestep, config_json,
                     run.best_reward, run.final_reward, run.convergence_timestep,
                     run.model_path, run.log_path, run.video_path,
                     run.tensorboard_path, run.git_commit, run.python_version,
-                    dependencies_json, run.description, tags_json,
+                    dependencies_json, run.description, run.status_note, tags_json,
                     datetime.now().isoformat(),  # created_at
                     datetime.now().isoformat(),  # updated_at
                     None,  # process_pid (will be updated separately)
@@ -469,13 +506,18 @@ class MetricsDatabase:
                     dependencies = json.loads(row['dependencies_json']) if row['dependencies_json'] else None
                     tags = json.loads(row['tags_json']) if row['tags_json'] else None
 
+                    # sqlite3.Row doesn't have .get() method, use dict(row) or check keys
                     run = ExperimentRun(
                         run_id=row['run_id'],
                         experiment_name=row['experiment_name'],
+                        custom_name=row['custom_name'] if 'custom_name' in row.keys() else None,
+                        leg_number=row['leg_number'] if 'leg_number' in row.keys() else 1,
+                        base_run_id=row['base_run_id'] if 'base_run_id' in row.keys() else None,
                         start_time=datetime.fromisoformat(row['start_time']),
                         end_time=datetime.fromisoformat(row['end_time']) if row['end_time'] else None,
                         status=row['status'],
                         current_timestep=row['current_timestep'],
+                        leg_start_timestep=row['leg_start_timestep'] if 'leg_start_timestep' in row.keys() else 0,
                         config=config,
                         best_reward=row['best_reward'],
                         final_reward=row['final_reward'],
@@ -488,6 +530,7 @@ class MetricsDatabase:
                         python_version=row['python_version'],
                         dependencies=dependencies,
                         description=row['description'],
+                        status_note=row['status_note'] if 'status_note' in row.keys() else None,
                         tags=tags
                     )
                     runs.append(run)
@@ -619,17 +662,22 @@ class MetricsDatabase:
                     if row['config_json']:
                         config_data = json.loads(row['config_json'])
                         config = ExperimentConfig.from_dict(config_data)
-                    
+
                     dependencies = json.loads(row['dependencies_json']) if row['dependencies_json'] else None
                     tags = json.loads(row['tags_json']) if row['tags_json'] else None
-                    
+
+                    # sqlite3.Row doesn't have .get() method, use dict(row) or check keys
                     run = ExperimentRun(
                         run_id=row['run_id'],
                         experiment_name=row['experiment_name'],
+                        custom_name=row['custom_name'] if 'custom_name' in row.keys() else None,
+                        leg_number=row['leg_number'] if 'leg_number' in row.keys() else 1,
+                        base_run_id=row['base_run_id'] if 'base_run_id' in row.keys() else None,
                         start_time=datetime.fromisoformat(row['start_time']),
                         end_time=datetime.fromisoformat(row['end_time']) if row['end_time'] else None,
                         status=row['status'],
                         current_timestep=row['current_timestep'],
+                        leg_start_timestep=row['leg_start_timestep'] if 'leg_start_timestep' in row.keys() else 0,
                         config=config,
                         best_reward=row['best_reward'],
                         final_reward=row['final_reward'],
@@ -642,6 +690,7 @@ class MetricsDatabase:
                         python_version=row['python_version'],
                         dependencies=dependencies,
                         description=row['description'],
+                        status_note=row['status_note'] if 'status_note' in row.keys() else None,
                         tags=tags
                     )
                     runs.append(run)
@@ -924,6 +973,42 @@ class MetricsDatabase:
                 query = f"UPDATE experiment_runs SET {', '.join(updates)} WHERE run_id = ?"
                 conn.execute(query, params)
                 conn.commit()
+
+    def set_heartbeat(self, run_id: str, heartbeat_time: Optional[datetime] = None):
+        """Update heartbeat timestamp for a running process."""
+        with self._lock:
+            conn = self._get_connection()
+            hb = (heartbeat_time or datetime.now()).isoformat()
+            conn.execute(
+                """
+                UPDATE experiment_runs
+                SET heartbeat_at = ?, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (hb, hb, run_id)
+            )
+            conn.commit()
+
+    def append_status_note(self, run_id: str, note: str):
+        """Append an audit note to status_note."""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.execute(
+                "SELECT status_note FROM experiment_runs WHERE run_id = ?",
+                (run_id,)
+            )
+            row = cursor.fetchone()
+            existing = row[0] if row else None
+            updated = f"{existing.rstrip()}\n{note}" if existing else note
+            conn.execute(
+                """
+                UPDATE experiment_runs
+                SET status_note = ?, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (updated, datetime.now().isoformat(), run_id)
+            )
+            conn.commit()
 
     def get_paused_experiments(self) -> List[Dict[str, Any]]:
         """Get all paused experiments that can be resumed."""
