@@ -225,6 +225,7 @@ test_collector.db
 # Database backups and temporary files
 *.db.backup
 *.db.bak
+*.db.bak-*
 *.sqlite
 *.sqlite3
 *.sqlite-shm
@@ -380,4 +381,3 @@ restart_*.py
 # Cleanup scripts
 cleanup_*.py
 clean_*.py
-

@@ -72,6 +72,13 @@ render:
   music_path: "assets/music.mp3"
   add_titles: true
 
+# Showcase Mode (post-training, stochastic replay; defaults keep it off)
+showcase_mode: false
+showcase_exploration_rate: 0.10
+showcase_seed_base: 42
+showcase_stochastic_policy: true
+showcase_randomness_mode: "both"  # "stochastic" | "epsilon" | "both"
+
 video_tools:
   manifest:
     output_path: "manifest.csv"

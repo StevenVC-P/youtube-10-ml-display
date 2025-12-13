@@ -11,6 +11,7 @@ from typing import Dict, Any, Callable, Optional
 import os
 from pathlib import Path
 import logging
+import time
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -125,17 +126,20 @@ def make_single_env(
         # Add video recording if requested
         if record_video and video_dir:
             os.makedirs(video_dir, exist_ok=True)
-            logger.info(f"[VIDEO DEBUG] Applying RecordVideo wrapper to env rank={rank}")
-            logger.info(f"[VIDEO DEBUG] video_folder={video_dir}")
-            logger.info(f"[VIDEO DEBUG] video_length={video_length}")
-            env = RecordVideo(
-                env,
+            segment_minutes = config.get("training_video", {}).get("segment_duration_minutes", 15)
+            if segment_minutes is None or segment_minutes <= 0:
+                print(f"[VIDEO] warning invalid_segment_duration value={segment_minutes}min; falling back to 15min")
+                segment_minutes = 15
+            segment_seconds = max(1, int(segment_minutes * 60))
+            env = TimeSegmentedRecordVideo(
+                env=env,
                 video_folder=video_dir,
-                episode_trigger=lambda x: video_length == 0 or x % video_length == 0,
-                name_prefix=f"env_{rank}"
+                name_prefix=f"env_{rank}",
+                segment_seconds=segment_seconds,
+                rank=rank
             )
-            logger.info(f"[VIDEO DEBUG] RecordVideo wrapper applied successfully")
-        
+            logger.info(f"[VIDEO DEBUG] Time-segmented RecordVideo wrapper applied (rank={rank}, segment={segment_seconds}s)")
+
         return env
     
     return _init
@@ -312,6 +316,64 @@ def make_vec_env(
     vec_env = vec_env_cls(env_fns)
 
     return vec_env
+
+
+class TimeSegmentedRecordVideo(gym.Wrapper):
+    """
+    Wrap an environment with RecordVideo, rotating output files by wall-clock segment duration.
+
+    Segments are started at reset boundaries to avoid interfering with training flow.
+    """
+
+    def __init__(self, env: gym.Env, video_folder: str, name_prefix: str, segment_seconds: int, rank: int = 0):
+        super().__init__(env)
+        self.base_env = env
+        self.video_folder = video_folder
+        self.name_prefix = name_prefix
+        self.segment_seconds = segment_seconds
+        self.rank = rank
+        self.segment_index = 0
+        self.rotate_on_next_reset = False
+        self.recorder: Optional[RecordVideo] = None
+        self.segment_start_time = None
+        self.recording_start_time = time.time()
+        self._start_new_segment()
+
+    def _start_new_segment(self):
+        if self.recorder:
+            try:
+                self.recorder.close_video_recorder()
+            except Exception:
+                pass
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        segment_prefix = f"{self.name_prefix}_seg{self.segment_index:04d}_{timestamp}"
+        start_time = time.time()
+        print(f"[VIDEO] start_segment run_id={Path(self.video_folder).name} env={self.rank} seg={self.segment_index:04d} ts={timestamp} dir={self.video_folder} prefix={segment_prefix}")
+        self.segment_index += 1
+        self.recorder = RecordVideo(
+            self.base_env,
+            video_folder=self.video_folder,
+            episode_trigger=lambda ep: True,
+            name_prefix=segment_prefix,
+            video_length=0
+        )
+        self.env = self.recorder
+        self.segment_start_time = start_time
+
+    def reset(self, **kwargs):
+        if self.rotate_on_next_reset:
+            elapsed = time.time() - self.segment_start_time if self.segment_start_time else 0.0
+            cumulative = time.time() - self.recording_start_time
+            print(f"[VIDEO] rotate_segment run_id={Path(self.video_folder).name} env={self.rank} seg={self.segment_index:04d} elapsed={elapsed:.1f}s cumulative={cumulative:.1f}s note=\"rotation occurs on reset boundary\"")
+            self._start_new_segment()
+            self.rotate_on_next_reset = False
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        if self.segment_start_time and (time.time() - self.segment_start_time) >= self.segment_seconds:
+            self.rotate_on_next_reset = True
+        return obs, reward, terminated, truncated, info
 
 
 def get_env_info(config: Dict[str, Any]) -> Dict[str, Any]:
