@@ -16,6 +16,7 @@ import secrets
 import yaml
 import tempfile
 import logging
+import json
 from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +25,12 @@ from pathlib import Path
 # Import new Phase 1 systems
 from tools.retro_ml_desktop.metric_event_bus import get_event_bus, EventTypes
 from tools.retro_ml_desktop.experiment_manager import ExperimentManager, Experiment
+from tools.retro_ml_desktop.provenance import (
+    iso_utc_now,
+    sanitize_filename_component,
+    sha256_file,
+    short_git_commit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +70,8 @@ class ProcessManager:
         self._log_buffers: Dict[str, str] = {}  # Store logs for progress parsing
         self._temp_configs: Dict[str, str] = {}  # Track temp config files
         self.ml_database = None  # Will be set by the main application
+        self._dumped_run_ids: set = set()  # Track which runs have been dumped for diagnostics
+        self._active_run_ids: set = set()  # Registry of currently active runs (best-effort)
 
         # Phase 1: Event Bus and Experiment Manager integration
         self.event_bus = get_event_bus()
@@ -118,6 +127,7 @@ class ProcessManager:
                 else:
                     # Process has exited - check exit code to determine if it was successful
                     exit_code = process_info.process.poll()
+                    self._active_run_ids.discard(process_info.id)
                     if exit_code == 0:
                         # Check if we've already marked this as finished (to avoid duplicate video generation)
                         was_already_finished = process_info.status == "finished"
@@ -264,7 +274,27 @@ class ProcessManager:
         resume_from_checkpoint: str = None,
         target_hours: float = None,
         hyperparameters: Optional[Dict[str, Any]] = None,
-        custom_name: str = None
+        training_video_enabled: Optional[bool] = None,
+        custom_name: str = None,
+        base_run_id: Optional[str] = None,
+        leg_index: Optional[int] = None,
+        branch_id: str = "main",
+        root_name: Optional[str] = None,
+        display_name: Optional[str] = None,
+        branch_token: Optional[str] = None,
+        variant_index: Optional[int] = None,
+        parent_run_id: Optional[str] = None,
+        parent_checkpoint_path: Optional[str] = None,
+        parent_checkpoint_hash: Optional[str] = None,
+        start_timestep: int = 0,
+        target_timestep: Optional[int] = None,
+        mode: str = "train",
+        deterministic: Optional[bool] = None,
+        epsilon: Optional[float] = None,
+        hyperparam_diff: Optional[Dict[str, Any]] = None,
+        wrappers_hash: Optional[str] = None,
+        env_version: Optional[str] = None,
+        seed: Optional[int] = None
     ) -> str:
         """
         Create and start a new training process.
@@ -282,6 +312,22 @@ class ProcessManager:
             resume_from_checkpoint: Path to checkpoint to resume from (optional)
             target_hours: Target video length in hours (optional)
             hyperparameters: Training hyperparameters (learning_rate, batch_size, etc.)
+            training_video_enabled: Whether to record training-time videos for this run
+            base_run_id: Lineage root identifier (defaults to run_id for first leg)
+            leg_index: Integer leg index for this lineage path
+            branch_id: Branch label (default "main")
+            parent_run_id: Parent run when resuming/branching
+            parent_checkpoint_path: Path to checkpoint used to seed this leg
+            parent_checkpoint_hash: SHA256 of parent checkpoint (computed if not provided)
+            start_timestep: Absolute timestep this leg starts from
+            target_timestep: Absolute timestep goal for the lineage after this leg
+            mode: Mode for this leg ("train"/"eval")
+            deterministic: Whether evaluation is deterministic
+            epsilon: Exploration epsilon (if applicable)
+            hyperparam_diff: Hyperparameter deltas vs parent (for branch legs)
+            wrappers_hash: Stable hash of wrapper stack/config
+            env_version: Environment version/build string
+            seed: Run seed (stored for provenance)
 
         Returns:
             Process ID
@@ -290,9 +336,17 @@ class ProcessManager:
             ValueError: If run_id is already active
         """
 
-        # Generate run ID if not provided
+        # Generate run ID if not provided (legacy)
         if not run_id:
             run_id = f"run-{secrets.token_hex(4)}"
+
+        # Lineage defaults and absolute targets
+        base_run_id = run_id if base_run_id is None else base_run_id
+        leg_index = 0 if leg_index is None else leg_index
+        branch_id = branch_id or "main"
+        leg_start_timestep = start_timestep or 0
+        absolute_target = target_timestep if target_timestep is not None else leg_start_timestep + total_timesteps
+        checkpoint_source = parent_checkpoint_path or resume_from_checkpoint
 
         # Validate that run_id is not already active
         if self.ml_database and self.ml_database.is_run_active(run_id):
@@ -307,9 +361,32 @@ class ProcessManager:
         # Update config with training parameters
         config_data['game']['env_id'] = game
         config_data['train']['algo'] = algorithm
-        config_data['train']['total_timesteps'] = total_timesteps
+        config_data['train']['run_id'] = run_id
+        config_data['train']['total_timesteps'] = total_timesteps  # per-leg timesteps
+        config_data['train']['target_total_timesteps'] = absolute_target  # absolute lineage target
+        config_data['train']['start_timestep'] = leg_start_timestep
+        config_data['train']['base_run_id'] = base_run_id
+        config_data['train']['leg_index'] = leg_index
+        config_data['train']['branch_id'] = branch_id
+        root_val = root_name or base_run_id or run_id
+        display_val = display_name or root_val
+        config_data['train']['root_name'] = root_val
+        config_data['train']['display_name'] = display_val
+        config_data['train']['branch_token'] = branch_token or "A"
+        config_data['train']['variant_index'] = variant_index if variant_index is not None else 1
+        config_data['train']['mode'] = mode
         config_data['train']['vec_envs'] = vec_envs
+        env_force_single_raw = os.environ.get("RETROML_FORCE_SINGLE_ENV")
+        force_single_env = str(env_force_single_raw).lower() in ("1", "true", "yes") if env_force_single_raw is not None else False
+        print(f"[CONFIG] RETROML_FORCE_SINGLE_ENV raw=\"{env_force_single_raw}\" resolved={force_single_env}")
+        if env_force_single_raw and not force_single_env:
+            raise ValueError(f"RETROML_FORCE_SINGLE_ENV was set to '{env_force_single_raw}' but did not parse as true")
+        config_data['train']['force_single_env'] = force_single_env
         config_data['train']['save_freq'] = save_freq
+        if seed is not None:
+            config_data['train']['seed'] = seed
+        if epsilon is not None:
+            config_data['train']['epsilon'] = epsilon
 
         # Add custom name to config for video overlays
         if custom_name:
@@ -321,11 +398,14 @@ class ProcessManager:
                 config_data['train'][key] = value
             print(f"✅ Applied hyperparameters: {hyperparameters}")
 
-        # CRITICAL FIX: Disable video recording during training for desktop app
-        # Set milestone_clip_seconds to 0 to skip video recording and use checkpoints instead
-        # Videos can be generated post-training using PostTrainingVideoGenerator
-        config_data['recording']['milestone_clip_seconds'] = 0   # 0 = skip video recording, save checkpoints
-        config_data['recording']['eval_clip_seconds'] = 0       # 0 = skip eval videos too
+        # Training video recording (opt-in per run; default off)
+        tv_flag = bool(training_video_enabled) if training_video_enabled is not None else False
+        config_data.setdefault('training_video', {})['enabled'] = tv_flag
+
+        # Desktop app mode: skip milestone/eval clip recording during training.
+        # Training-time recordings (paths.videos_training) are controlled independently via config.training_video.enabled.
+        config_data['recording']['milestone_clip_seconds'] = 0   # 0 = skip milestone clips, save checkpoints instead
+        config_data['recording']['eval_clip_seconds'] = 0        # 0 = skip eval videos too
 
         # Save target video length for post-training video generation
         if target_hours is not None:
@@ -369,20 +449,66 @@ class ProcessManager:
         for dir_path in output_dirs:
             dir_path.mkdir(parents=True, exist_ok=True)
 
+        # Persist effective config for reproducibility (includes hyperparameter overrides)
+        effective_config_dir = self.project_root / "models" / "checkpoints" / run_id
+        effective_config_dir.mkdir(parents=True, exist_ok=True)
+        effective_config_path = effective_config_dir / "config_effective.yaml"
+        with open(effective_config_path, 'w') as f:
+            yaml.dump(config_data, f, default_flow_style=False)
+        print(f"[RUN] wrote effective config: {effective_config_path}")
+
+        # Compute provenance hashes
+        config_hash = sha256_file(effective_config_path)
+        checkpoint_hash = parent_checkpoint_hash
+        if not checkpoint_hash and checkpoint_source:
+            checkpoint_hash = sha256_file(Path(checkpoint_source))
+        git_short, git_full = short_git_commit(self.project_root)
+
         # Save run metadata to a JSON file in the checkpoint directory
         metadata_path = self.project_root / "models" / "checkpoints" / run_id / "run_metadata.json"
         metadata = {
             'run_id': run_id,
+            'base_run_id': base_run_id,
+            'leg_index': leg_index,
+            'branch_id': branch_id,
+            'root_name': root_val,
+            'display_name': display_val,
+            'branch_token': branch_token or "A",
+            'variant_index': variant_index if variant_index is not None else 1,
+            'parent_run_id': parent_run_id,
+            'parent_checkpoint_path': checkpoint_source,
+            'parent_checkpoint_hash': checkpoint_hash,
             'custom_name': custom_name,
             'game': game,
             'algorithm': algorithm,
-            'total_timesteps': total_timesteps,
+            'total_timesteps_leg': total_timesteps,
             'target_hours': target_hours,
-            'created': datetime.now().isoformat(),
-            'custom_output_path': custom_output_path
+            'created_at': iso_utc_now(),
+            'custom_output_path': custom_output_path,
+            'config_path': str(effective_config_path),
+            'config_hash': config_hash,
+            'git_commit': git_short,
+            'git_commit_full': git_full,
+            'env_id': game,
+            'env_version': env_version,
+            'wrappers_hash': wrappers_hash,
+            'seed': seed,
+            'mode': mode,
+            'deterministic': deterministic,
+            'epsilon': epsilon,
+            'start_timestep': leg_start_timestep,
+            'target_timestep': absolute_target,
+            'end_timestep': None,
+            'hyperparam_diff': hyperparam_diff or {},
+            'hyperparameters': hyperparameters or {},
+            'effective_config': str(effective_config_path.name)
+        }
+        metadata['parent_lineage'] = {
+            'parent_run_id': parent_run_id,
+            'parent_checkpoint_path': checkpoint_source,
+            'parent_checkpoint_hash': checkpoint_hash
         }
         with open(metadata_path, 'w') as f:
-            import json
             json.dump(metadata, f, indent=2)
 
         # Create temporary config file
@@ -393,6 +519,16 @@ class ProcessManager:
 
         with temp_config as f:
             yaml.dump(config_data, f, default_flow_style=False)
+
+        # Verify force_single_env persisted as expected
+        try:
+            reloaded = yaml.safe_load(Path(temp_config.name).read_text())
+            verified_val = reloaded.get('train', {}).get('force_single_env', None)
+            print(f"[CONFIG] verified_yaml_force_single_env={verified_val} path=\"{temp_config.name}\"")
+            if verified_val != force_single_env:
+                raise ValueError(f"force_single_env mismatch: expected {force_single_env} got {verified_val}")
+        except Exception as e:
+            raise
 
         # Store temp config path for cleanup
         self._temp_configs[run_id] = temp_config.name
@@ -415,6 +551,8 @@ class ProcessManager:
         
         # Prepare environment variables
         env = os.environ.copy()
+        # Ensure Python stdout is unbuffered so progress lines are captured promptly
+        env["PYTHONUNBUFFERED"] = "1"
         
         # Set GPU if specified
         if resources and resources.gpu_id:
@@ -428,10 +566,12 @@ class ProcessManager:
         
         try:
             # Start the process
+            stdout_setting = subprocess.PIPE
+            stderr_setting = subprocess.STDOUT
             process = subprocess.Popen(
                 command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout=stdout_setting,
+                stderr=stderr_setting,
                 text=True,
                 bufsize=1,  # Line buffered
                 encoding='utf-8',  # Force UTF-8 encoding on Windows
@@ -439,6 +579,17 @@ class ProcessManager:
                 env=env,
                 cwd=str(self.project_root)
             )
+
+            stdout_mode = "PIPE" if stdout_setting == subprocess.PIPE else "None"
+            if stderr_setting == subprocess.STDOUT:
+                stderr_mode = "STDOUT"
+            elif stderr_setting == subprocess.PIPE:
+                stderr_mode = "PIPE"
+            else:
+                stderr_mode = "None"
+
+            cmd_display = subprocess.list2cmdline(command)
+            print(f"[PROC START] run_id={run_id} pid={process.pid} stdout={stdout_mode} stderr={stderr_mode} cmd=\"{cmd_display}\"")
             
             # Apply resource limits
             if resources:
@@ -462,18 +613,25 @@ class ProcessManager:
             if target_hours is not None:
                 process_info.target_hours = target_hours
 
-            # Store total_timesteps for progress tracking
-            process_info.total_timesteps = total_timesteps
+            # Store total_timesteps for progress tracking (absolute target)
+            process_info.start_timestep = leg_start_timestep
+            process_info.total_timesteps = absolute_target
 
             self.processes[run_id] = process_info
+            self._active_run_ids.add(run_id)
 
             # Phase 1: Create experiment and publish TRAINING_STARTED event
             if self.experiment_manager:
                 try:
                     # Determine preset based on target_hours
-                    preset = "quick" if target_hours and target_hours < 1 else "standard"
                     if target_hours and target_hours >= 8:
-                        preset = "epic"
+                        preset = "long"
+                    elif target_hours and target_hours >= 4:
+                        preset = "medium"
+                    elif target_hours and target_hours >= 1:
+                        preset = "short"
+                    else:
+                        preset = "quick"
 
                     # Create experiment
                     experiment = self.experiment_manager.create_experiment(
@@ -505,7 +663,7 @@ class ProcessManager:
                         'target_hours': target_hours
                     })
 
-                    print(f"[Experiment] Created: {experiment.id} ({preset} preset, {target_hours or 4.0}h target)")
+                    print(f"[Experiment] Created: {run_id} ({preset} preset, {target_hours or 4.0}h target, experiment_id={experiment.id})")
                     logger.debug(f"Created experiment {experiment.id} for run {run_id}")
 
                 except Exception as e:
@@ -513,6 +671,8 @@ class ProcessManager:
 
             # Start log streaming automatically for progress tracking
             self._start_log_stream_for_process(run_id)
+            buffer_key_exists = run_id in self._log_buffers
+            print(f"[PROC BUFFER] run_id={run_id} buffer_key_exists={buffer_key_exists}")
 
             return run_id
 
@@ -599,6 +759,7 @@ class ProcessManager:
 
             process_info.status = "stopped"
             process_info.process = None
+            self._active_run_ids.discard(process_id)
 
             # Mark run as inactive in database
             if self.ml_database:
@@ -785,6 +946,7 @@ class ProcessManager:
 
         # Remove from tracking
         del self.processes[process_id]
+        self._active_run_ids.discard(process_id)
 
         return True
     
@@ -794,17 +956,52 @@ class ProcessManager:
         # This could be enhanced to read from log files if needed
         return f"Live log streaming active for process {process_id}"
 
+    def get_active_run_ids(self) -> List[str]:
+        """Get a snapshot list of run_ids considered active in this session."""
+        return list(self._active_run_ids)
+
+    def get_active_run_pids(self) -> Dict[str, int]:
+        """Get mapping of active run_id -> pid for runs that still have a live process handle."""
+        run_pids: Dict[str, int] = {}
+        for run_id in list(self._active_run_ids):
+            info = self.processes.get(run_id)
+            if not info or not info.process or info.process.poll() is not None:
+                continue
+            if info.pid:
+                run_pids[run_id] = int(info.pid)
+        return run_pids
+
     def get_recent_logs(self, process_id: str) -> str:
         """Get recent logs from the log buffer for progress parsing."""
         import logging
 
         if process_id not in self._log_buffers:
-            logging.info(f"No log buffer found for process {process_id}")
+            logging.warning(f"WARNING: get_recent_logs missing buffer for run_id={process_id} returning global logs")
+            if self._log_buffers:
+                return "\n".join(self._log_buffers.values())
             return ""
 
         # Return the last 2000 characters of logs for parsing
         log_buffer = self._log_buffers[process_id]
         buffer_length = len(log_buffer)
+
+        # Optional one-time full dump for diagnostics
+        dump_env = os.environ.get("RETROML_DUMP_LOG_ONCE")
+        dump_enabled = str(dump_env).lower() in ("1", "true", "yes")
+        if dump_enabled:
+            if not hasattr(self, "_dumped_run_ids"):
+                self._dumped_run_ids = set()
+            if process_id not in self._dumped_run_ids:
+                try:
+                    dump_dir = self.project_root / "outputs" / process_id
+                    dump_dir.mkdir(parents=True, exist_ok=True)
+                    dump_file = dump_dir / "debug_full_stdout.log"
+                    dump_file.write_text(log_buffer)
+                    logging.info(f"[DEBUG] dumped full log buffer to {dump_file} (len={buffer_length})")
+                    self._dumped_run_ids.add(process_id)
+                except Exception as e:
+                    logging.warning(f"Failed to dump full log buffer for {process_id}: {e}")
+
         result = log_buffer[-2000:] if buffer_length > 2000 else log_buffer
 
         logging.info(f"get_recent_logs for {process_id}: buffer_length={buffer_length}, returning {len(result)} chars")

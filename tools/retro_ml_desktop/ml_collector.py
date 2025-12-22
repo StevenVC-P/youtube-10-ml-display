@@ -18,9 +18,14 @@ from typing import Dict, List, Optional, Any, Callable
 import logging
 import psutil
 import subprocess
+import json
+import yaml
+import os
 
 from .ml_metrics import TrainingMetrics, ExperimentRun, ExperimentConfig
 from .ml_database import MetricsDatabase
+
+DEBUG_METRICS_INGESTION = os.getenv("DEBUG_METRICS_INGESTION") in ("1", "true", "True", "yes")
 
 
 class LogParser:
@@ -107,14 +112,18 @@ class LogParser:
                 r'\|\s*iterations\s*\|\s*([+-]?\d*\.?\d+)\s*\|'
             )
         }
+
+        # Warn only once per run when target timesteps are unknown
+        self._warned_missing_target = set()
     
-    def parse_log_chunk(self, log_text: str, run_id: str) -> List[TrainingMetrics]:
+    def parse_log_chunk(self, log_text: str, run_id: str, target_total_timesteps: Optional[int] = None) -> List[TrainingMetrics]:
         """
         Parse a chunk of log text and extract training metrics.
         
         Args:
             log_text: Raw log text to parse
             run_id: Run ID for the metrics
+            target_total_timesteps: Expected total timesteps for this run (if known)
             
         Returns:
             List of TrainingMetrics objects extracted from logs
@@ -125,6 +134,7 @@ class LogParser:
 
         # Current metric being built
         current_metric = None
+        saw_stats_line = False
 
         for line_num, line in enumerate(lines):
             line = line.strip()
@@ -135,6 +145,8 @@ class LogParser:
             for pattern_name, pattern in self.progress_patterns.items():
                 match = pattern.search(line)
                 if match:
+                    if '[Stats]' in line:
+                        saw_stats_line = True
                     if pattern_name == 'sb3_progress':
                         current_steps = int(match.group(1).replace(',', ''))
                         total_steps = int(match.group(2).replace(',', ''))
@@ -225,20 +237,28 @@ class LogParser:
                     elif metric_name == 'total_timesteps':
                         # This is the current timestep, not the target total
                         current_metric.timestep = int(value)
-                        # Keep the target total timesteps (4M) for progress calculation
-                        if current_metric.total_timesteps == 0:
-                            current_metric.total_timesteps = 4000000  # Default target
                     elif metric_name == 'iterations':
                         current_metric.episode_count = int(value)
         
         # Calculate progress percentage if we have timestep info
         if current_metric and current_metric.timestep > 0:
-            # Ensure we have a reasonable target total timesteps
-            if current_metric.total_timesteps == 0 or current_metric.total_timesteps <= current_metric.timestep:
-                # Default to 4M timesteps if not specified (common for Atari)
-                current_metric.total_timesteps = 4000000
+            # Prefer target_total_timesteps passed from caller, otherwise use what we saw in logs
+            target_total = target_total_timesteps or current_metric.total_timesteps
 
-            current_metric.progress_pct = (current_metric.timestep / current_metric.total_timesteps) * 100.0
+            if target_total and target_total > 0:
+                current_metric.total_timesteps = target_total
+                current_metric.progress_pct = (current_metric.timestep / target_total) * 100.0
+            else:
+                # Store steps but avoid misleading percentage/ETA
+                current_metric.total_timesteps = current_metric.timestep
+                current_metric.progress_pct = 0.0
+
+                if run_id not in self._warned_missing_target:
+                    logging.warning(
+                        f"[Metrics] Missing target timesteps for {run_id}; "
+                        "storing step counts only and skipping progress percentage."
+                    )
+                    self._warned_missing_target.add(run_id)
 
             metrics_list.append(current_metric)
 
@@ -247,6 +267,10 @@ class LogParser:
                         f"progress={current_metric.progress_pct:.2f}%, "
                         f"reward={current_metric.episode_reward_mean}, "
                         f"fps={current_metric.fps}")
+
+        if DEBUG_METRICS_INGESTION and saw_stats_line and not metrics_list:
+            stats_lines = [l for l in lines if '[Stats]' in l]
+            logging.warning(f"[METRICS DEBUG] Saw [Stats] but parsed 0 metrics for {run_id}. Sample lines: {stats_lines[:3]}")
 
         return metrics_list
 
@@ -355,6 +379,10 @@ class MetricsCollector:
         # Active collectors
         self.active_collectors = {}  # run_id -> collector thread
         self.stop_events = {}  # run_id -> stop event
+        self._debug_last_log_time: Dict[str, float] = {}
+        
+        # Cache target timesteps per run to avoid repeated DB lookups
+        self._target_timesteps_cache: Dict[str, Optional[int]] = {}
         
         # Logging
         self.logger = logging.getLogger(__name__)
@@ -411,6 +439,68 @@ class MetricsCollector:
         del self.stop_events[run_id]
         
         self.logger.info(f"Stopped metrics collection for run {run_id}")
+
+    def _get_target_total_timesteps(self, run_id: str) -> Optional[int]:
+        """
+        Get the expected total timesteps for a run from the database/config.
+
+        We avoid hard-coded defaults and instead use stored run config or
+        previously parsed metrics.
+        """
+        if run_id in self._target_timesteps_cache:
+            return self._target_timesteps_cache[run_id]
+
+        target_total = None
+
+        # Prefer total_timesteps saved with the run config
+        try:
+            config_json = self.database.get_experiment_run_field(run_id, 'config_json')
+            if config_json:
+                config_data = json.loads(config_json)
+                target_total = (
+                    config_data.get('total_timesteps')
+                    or config_data.get('train', {}).get('total_timesteps')
+                    or config_data.get('training', {}).get('total_timesteps')
+                )
+            if not target_total:
+                # Check explicit target_timestep column if present
+                target_from_db = self.database.get_experiment_run_field(run_id, 'target_timestep')
+                if target_from_db:
+                    target_total = int(target_from_db)
+        except Exception as e:
+            self.logger.warning(f"Could not read target timesteps for {run_id} from config: {e}")
+
+        # Next: read persisted run_metadata.json for absolute targets
+        if not target_total:
+            try:
+                meta_path = Path("models") / "checkpoints" / run_id / "run_metadata.json"
+                if meta_path.exists():
+                    meta = json.loads(meta_path.read_text())
+                    target_total = meta.get('target_timestep') or meta.get('total_timesteps')
+            except Exception as e:
+                self.logger.debug(f"Could not read target timesteps for {run_id} from run_metadata.json: {e}")
+
+        # Fallback: read persisted effective config written alongside checkpoints
+        if not target_total:
+            try:
+                cfg_path = Path("models") / "checkpoints" / run_id / "config_effective.yaml"
+                if cfg_path.exists():
+                    cfg_data = yaml.safe_load(cfg_path.read_text())
+                    target_total = (
+                        cfg_data.get('train', {}).get('target_total_timesteps')
+                        or cfg_data.get('train', {}).get('total_timesteps')
+                    )
+            except Exception as e:
+                self.logger.debug(f"Could not read target timesteps for {run_id} from config_effective.yaml: {e}")
+
+        # Fallback: use latest stored metrics if they already contain a total
+        if not target_total:
+            latest_metric = self.database.get_latest_metrics(run_id)
+            if latest_metric and latest_metric.total_timesteps:
+                target_total = latest_metric.total_timesteps
+
+        self._target_timesteps_cache[run_id] = target_total
+        return target_total
     
     def _collection_loop(self, run_id: str, log_source: Callable[[], str],
                         pid: Optional[int], interval: float, stop_event: threading.Event):
@@ -443,9 +533,30 @@ class MetricsCollector:
                     # Only log new content at debug level
                     self.logger.debug(f"New log content detected for {run_id}, processing {len(current_logs)} chars")
 
+                    # Debug log chunk (rate limited)
+                    if DEBUG_METRICS_INGESTION:
+                        now = time.time()
+                        last = self._debug_last_log_time.get(run_id, 0)
+                        if now - last > 30:
+                            snippet = current_logs[-500:] if len(current_logs) > 500 else current_logs
+                            contains_stats = "[Stats]" in snippet
+                            self.logger.warning(f"[METRICS DEBUG] run_id={run_id} log snippet (contains [Stats]={contains_stats}): {snippet[:500]}")
+                            self._debug_last_log_time[run_id] = now
+
                     # Parse metrics from logs
-                    metrics_list = self.log_parser.parse_log_chunk(current_logs, run_id)
+                    target_total = self._get_target_total_timesteps(run_id)
+                    metrics_list = self.log_parser.parse_log_chunk(
+                        current_logs,
+                        run_id,
+                        target_total_timesteps=target_total
+                    )
                     self.logger.debug(f"Parsed {len(metrics_list)} metrics from logs for {run_id}")
+
+                    # Refresh cached target if the logs revealed it
+                    if metrics_list:
+                        latest_total = metrics_list[-1].total_timesteps
+                        if latest_total and metrics_list[-1].progress_pct > 0:
+                            self._target_timesteps_cache[run_id] = latest_total
                     
                     # Add system metrics to latest metric
                     if metrics_list:

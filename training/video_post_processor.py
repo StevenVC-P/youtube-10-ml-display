@@ -7,25 +7,26 @@ Provides functions for creating time-lapses, compilations, and comparisons.
 import os
 import sys
 import logging
+import re
+import json
+import hashlib
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime
 import time
 
+import math
 import numpy as np
 import cv2
 import torch
 from stable_baselines3 import PPO, DQN
 
-try:
-    from moviepy import VideoFileClip, ImageClip, concatenate_videoclips, CompositeVideoClip, clips_array
-    MOVIEPY_AVAILABLE = True
-except ImportError:
-    MOVIEPY_AVAILABLE = False
-
 # Add project root to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from envs.make_env import make_single_env
+from training.video_manifest import ensure_manifest, hash_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -40,23 +41,36 @@ class VideoPostProcessor:
         Args:
             config: Configuration dictionary
         """
-        if not MOVIEPY_AVAILABLE:
-            raise ImportError(
-                "MoviePy is required for video post-processing. "
-                "Install it with: pip install moviepy"
-            )
-        
         self.config = config
         self.video_training_dir = Path(config.get('paths', {}).get('videos_training', 'video/training'))
         self.video_output_dir = Path(config.get('paths', {}).get('videos_output', 'video/output'))
         self.video_output_dir.mkdir(parents=True, exist_ok=True)
+        self.ffmpeg_bin = config.get('paths', {}).get('ffmpeg_path', 'ffmpeg')
+
+    @staticmethod
+    def _sorted_training_videos(run_dir: Path) -> List[Path]:
+        """
+        Collect training videos (legacy and segmented) sorted chronologically.
+        """
+        def _video_sort_key(path: Path):
+            name = path.name
+            m = re.search(r"seg(\d+).*?-episode-(\d+)", name)
+            if m:
+                return (int(m.group(1)), int(m.group(2)), path.stat().st_mtime)
+            m = re.search(r"episode-(\d+)", name)
+            if m:
+                return (0, int(m.group(1)), path.stat().st_mtime)
+            return (10**9, path.stat().st_mtime)
+
+        return sorted(run_dir.glob("*.mp4"), key=_video_sort_key)
     
     def concatenate_training_videos(
         self,
         run_id: str,
         output_filename: Optional[str] = None,
         speed_multiplier: float = 1.0,
-        max_duration: Optional[float] = None
+        max_duration: Optional[float] = None,
+        overlays_requested: bool = False
     ) -> Optional[str]:
         """
         Concatenate all episode videos from a training run into a single video.
@@ -71,224 +85,217 @@ class VideoPostProcessor:
             Path to output video file, or None if failed
         """
         logger.info(f"Concatenating training videos for run: {run_id}")
-        
-        # Find all episode videos for this run
         run_dir = self.video_training_dir / run_id
         if not run_dir.exists():
             logger.error(f"Training video directory not found: {run_dir}")
             return None
-        
-        # Get all episode videos sorted by episode number
-        video_files = sorted(
-            run_dir.glob("env_0-episode-*.mp4"),
-            key=lambda p: int(p.stem.split('-')[-1])
+
+        manifest = ensure_manifest(run_id, self.video_training_dir, self.config.get('paths', {}).get('ffmpeg_path'))
+        segments = manifest.get("segments", [])
+
+        if not segments:
+            logger.error(f"No segments found for run {run_id}")
+            return None
+
+        if output_filename is None:
+            speed_suffix = f"_{speed_multiplier}x" if speed_multiplier != 1.0 else ""
+            output_filename = f"{run_id}_training{speed_suffix}.mp4"
+
+        output_path = self.video_output_dir / run_id / output_filename
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Build concat list file with absolute paths (Windows-safe)
+        list_file = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8")
+        total_duration = 0.0
+        for seg in segments:
+            seg_path = (run_dir / seg["path"]).resolve()
+            path_str = seg_path.as_posix().replace("'", r"'\''")
+            list_file.write(f"file '{path_str}'\n")
+            try:
+                if seg.get("duration_sec"):
+                    total_duration += float(seg["duration_sec"])
+            except Exception:
+                pass
+        list_file.flush()
+        list_file.close()
+
+        expected_output = (total_duration / speed_multiplier) if speed_multiplier else total_duration
+        logger.info(
+            f"TIMELAPSE Found {len(segments)} clips total_duration≈{total_duration:.1f}s "
+            f"Selection=ALL_SEGMENTS Speed={speed_multiplier} => expected_output≈{expected_output:.1f}s"
         )
-        
-        if not video_files:
-            logger.error(f"No episode videos found in {run_dir}")
-            return None
-        
-        logger.info(f"Found {len(video_files)} episode videos")
-        
-        try:
-            # Load all video clips
-            clips = []
-            total_duration = 0
-            
-            for video_file in video_files:
-                clip = VideoFileClip(str(video_file))
 
-                # Apply speed multiplier if specified
-                if speed_multiplier != 1.0:
-                    clip = clip.with_speed_scaled(speed_multiplier)
-
-                # Check if we've reached max duration
-                if max_duration and (total_duration + clip.duration) > max_duration:
-                    # Trim the last clip to fit max_duration
-                    remaining = max_duration - total_duration
-                    if remaining > 0:
-                        clip = clip.subclipped(0, remaining)
-                        clips.append(clip)
-                    break
-
-                clips.append(clip)
-                total_duration += clip.duration
-            
-            if not clips:
-                logger.error("No clips to concatenate")
-                return None
-            
-            # Concatenate all clips
-            logger.info(f"Concatenating {len(clips)} clips (total duration: {total_duration:.1f}s)")
-            final_clip = concatenate_videoclips(clips, method="compose")
-            
-            # Generate output filename
-            if output_filename is None:
-                speed_suffix = f"_{speed_multiplier}x" if speed_multiplier != 1.0 else ""
-                output_filename = f"{run_id}_training{speed_suffix}.mp4"
-            
-            output_path = self.video_output_dir / output_filename
-            
-            # Write output video
-            logger.info(f"Writing output video: {output_path}")
-            final_clip.write_videofile(
+        ffmpeg_bin = self.ffmpeg_bin
+        if speed_multiplier == 1.0:
+            cmd = [
+                ffmpeg_bin,
+                "-hide_banner",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_file.name,
+                "-c",
+                "copy",
+                "-an",
                 str(output_path),
-                codec='libx264',
-                audio=False,
-                preset='medium',
-                logger=None  # Suppress moviepy progress bar
-            )
-            
-            # Clean up
-            for clip in clips:
-                clip.close()
-            final_clip.close()
-            
-            logger.info(f"Successfully created training video: {output_path}")
-            return str(output_path)
+            ]
+        else:
+            cmd = [
+                ffmpeg_bin,
+                "-hide_banner",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_file.name,
+                "-filter:v",
+                f"setpts=PTS/{speed_multiplier}",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
+                "-an",
+                str(output_path),
+            ]
 
+        logger.info(f"TIMELAPSE ffmpeg command: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, check=True)
         except Exception as e:
-            logger.error(f"Failed to concatenate videos: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Failed to concatenate via ffmpeg: {e}")
             return None
+        finally:
+            try:
+                Path(list_file.name).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        # Write provenance sidecar
+        prov = {
+            "run_id": run_id,
+            "output": str(output_path),
+            "selection_policy": "ALL_SEGMENTS",
+            "speed_multiplier": speed_multiplier,
+            "manifest_hash": hash_manifest(manifest),
+            "generator": "video_post_processor_concat_v1",
+            "created_at": datetime.utcnow().isoformat(),
+            "overlays_requested": overlays_requested,
+        }
+        prov_path = output_path.with_suffix(output_path.suffix + ".json")
+        prov_path.write_text(json.dumps(prov, indent=2), encoding="utf-8")
+
+        logger.info(f"Successfully created training video: {output_path}")
+        return str(output_path)
 
     def create_milestone_progression_video(
         self,
         run_id: str,
         milestone_percentages: List[int] = [10, 50, 100],
         output_filename: Optional[str] = None,
-        layout: str = "horizontal",
         clip_duration: float = 30.0
     ) -> Optional[str]:
         """
-        Create a side-by-side comparison video showing AI progress at different milestones.
+        Create a sequential montage video showing AI progress at different milestones.
 
         Args:
             run_id: Training run ID
             milestone_percentages: List of milestone percentages to compare (e.g., [10, 50, 100])
             output_filename: Output filename (default: {run_id}_progression.mp4)
-            layout: Layout style - "horizontal", "vertical", or "grid"
-            clip_duration: Duration of each clip in seconds
+            clip_duration: Duration of each clip in seconds (currently unused; full segments are used)
 
         Returns:
             Path to output video file, or None if failed
         """
         logger.info(f"Creating milestone progression video for run: {run_id}")
 
-        # Find training videos for each milestone
+        # Load manifest and pick milestone clips
+        manifest = ensure_manifest(run_id, self.video_training_dir, self.config.get('paths', {}).get('ffmpeg_path'))
+        segments = manifest.get("segments", [])
+        total_clips = len(segments)
         run_dir = self.video_training_dir / run_id
-        if not run_dir.exists():
-            logger.error(f"Training video directory not found: {run_dir}")
+
+        if total_clips == 0:
+            logger.error("No milestone clips found (no training clips available)")
             return None
 
+        selected_paths: List[Path] = []
+        for pct in milestone_percentages:
+            target_idx = min(total_clips - 1, max(0, round((pct / 100.0) * (total_clips - 1))))
+            seg = segments[target_idx]
+            seg_path = run_dir / seg["path"]
+            selected_paths.append(seg_path)
+            logger.info(f"Using {pct}% milestone clip idx={target_idx+1}/{total_clips}: {seg_path.name}")
+
+        if output_filename is None:
+            output_filename = f"{run_id}_progression.mp4"
+        output_path = self.video_output_dir / run_id / output_filename
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        logger.info(
+            f"PROGRESSION selection=MILESTONE_INDICES clips={len(selected_paths)} "
+            f"total_available={total_clips}"
+        )
+
+        # Build concat list file for sequential montage
+        list_file = tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8")
+        total_duration = 0.0
+        for seg in selected_paths:
+            seg_path = seg.resolve()
+            path_str = seg_path.as_posix().replace("'", r"'\''")
+            list_file.write(f"file '{path_str}'\n")
+        list_file.flush()
+        list_file.close()
+
+        cmd = [
+            self.ffmpeg_bin,
+            "-hide_banner",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            list_file.name,
+            "-c",
+            "copy",
+            "-an",
+            str(output_path),
+        ]
+
+        logger.info(f"PROGRESSION ffmpeg command: {' '.join(cmd)}")
         try:
-            clips = []
-            labels = []
-
-            for pct in milestone_percentages:
-                # Find videos around this milestone
-                # For now, we'll use the first few episodes as a proxy
-                # In a real implementation, we'd track which episodes correspond to which milestones
-                episode_num = int((pct / 100.0) * 20)  # Rough estimate
-                video_file = run_dir / f"env_0-episode-{episode_num}.mp4"
-
-                if not video_file.exists():
-                    # Try to find the closest episode
-                    all_episodes = sorted(run_dir.glob("env_0-episode-*.mp4"))
-                    if not all_episodes:
-                        logger.warning(f"No episodes found for {pct}% milestone")
-                        continue
-
-                    # Use the episode closest to our target
-                    target_idx = min(episode_num, len(all_episodes) - 1)
-                    video_file = all_episodes[target_idx]
-
-                logger.info(f"Loading {pct}% milestone video: {video_file}")
-                clip = VideoFileClip(str(video_file))
-
-                # Trim to desired duration
-                if clip.duration > clip_duration:
-                    clip = clip.subclipped(0, clip_duration)
-
-                clips.append(clip)
-                labels.append(f"{pct}% Training")
-
-            if not clips:
-                logger.error("No milestone clips found")
-                return None
-
-            # Create side-by-side layout
-            if layout == "horizontal":
-                # Resize clips to fit horizontally
-                target_width = 640 // len(clips)
-                target_height = 480
-                resized_clips = [clip.resized((target_width, target_height)) for clip in clips]
-                final_clip = clips_array([resized_clips])
-
-            elif layout == "vertical":
-                # Resize clips to fit vertically
-                target_width = 640
-                target_height = 480 // len(clips)
-                resized_clips = [clip.resized((target_width, target_height)) for clip in clips]
-                final_clip = clips_array([[clip] for clip in resized_clips])
-
-            elif layout == "grid":
-                # Create 2x2 grid (or adjust based on number of clips)
-                import math
-                grid_size = math.ceil(math.sqrt(len(clips)))
-                target_width = 640 // grid_size
-                target_height = 480 // grid_size
-                resized_clips = [clip.resized((target_width, target_height)) for clip in clips]
-
-                # Pad clips to fill grid
-                while len(resized_clips) < grid_size * grid_size:
-                    # Create a black clip as filler
-                    black_clip = ImageClip(
-                        [[0, 0, 0]] * target_height * target_width,
-                        duration=clip_duration
-                    ).set_duration(clip_duration)
-                    resized_clips.append(black_clip)
-
-                # Arrange in grid
-                rows = []
-                for i in range(grid_size):
-                    row = resized_clips[i * grid_size:(i + 1) * grid_size]
-                    rows.append(row)
-                final_clip = clips_array(rows)
-            else:
-                logger.error(f"Unknown layout: {layout}")
-                return None
-
-            # Generate output filename
-            if output_filename is None:
-                output_filename = f"{run_id}_progression_{layout}.mp4"
-
-            output_path = self.video_output_dir / output_filename
-
-            # Write output video
-            logger.info(f"Writing progression video: {output_path}")
-            final_clip.write_videofile(
-                str(output_path),
-                codec='libx264',
-                audio=False,
-                preset='medium',
-                logger=None
-            )
-
-            # Clean up
-            for clip in clips:
-                clip.close()
-            final_clip.close()
-
-            logger.info(f"Successfully created progression video: {output_path}")
-            return str(output_path)
-
+            subprocess.run(cmd, check=True)
         except Exception as e:
             logger.error(f"Failed to create progression video: {e}")
-            import traceback
-            traceback.print_exc()
             return None
+        finally:
+            try:
+                Path(list_file.name).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        prov = {
+            "run_id": run_id,
+            "output": str(output_path),
+            "selection_policy": "MILESTONE_INDICES",
+            "milestone_percentages": milestone_percentages,
+            "speed_multiplier": 1.0,
+            "manifest_hash": hash_manifest(manifest),
+            "generator": "video_post_processor_progression_v2_seq",
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        prov_path = output_path.with_suffix(output_path.suffix + ".json")
+        prov_path.write_text(json.dumps(prov, indent=2), encoding="utf-8")
+
+        logger.info(f"Successfully created progression video: {output_path}")
+        return str(output_path)
 
     def create_timelapse(
         self,
@@ -311,49 +318,40 @@ class VideoPostProcessor:
         Returns:
             Path to output video file, or None if failed
         """
-        logger.info(f"Creating time-lapse for run: {run_id} (speed: {speed_multiplier}x, overlays: {add_overlays})")
-
+        logger.info(f"Creating time-lapse for run: {run_id} (speed: {speed_multiplier}x, overlays requested: {add_overlays})")
+        # If overlays are requested, try to generate overlay timelapse first.
         if add_overlays:
-            # Generate new footage with overlays using the model
-            return self._create_timelapse_with_overlays(
+            overlay_path = self._create_timelapse_with_overlays(
                 run_id=run_id,
                 speed_multiplier=speed_multiplier,
                 target_duration=target_duration,
-                output_filename=output_filename
-            )
-        else:
-            # Use existing training videos (raw footage, no overlays)
-            # If target_duration is specified, calculate required speed multiplier
-            if target_duration:
-                run_dir = self.video_training_dir / run_id
-                if not run_dir.exists():
-                    logger.error(f"Training video directory not found: {run_dir}")
-                    return None
-
-                # Calculate total duration of all videos
-                video_files = list(run_dir.glob("env_0-episode-*.mp4"))
-                total_duration = 0
-                for video_file in video_files:
-                    try:
-                        clip = VideoFileClip(str(video_file))
-                        total_duration += clip.duration
-                        clip.close()
-                    except Exception as e:
-                        logger.warning(f"Failed to read {video_file}: {e}")
-
-                if total_duration > 0:
-                    speed_multiplier = total_duration / target_duration
-                    logger.info(f"Calculated speed multiplier: {speed_multiplier:.2f}x for target duration {target_duration}s")
-
-            # Use concatenate_training_videos with speed multiplier
-            if output_filename is None:
-                output_filename = f"{run_id}_timelapse_{speed_multiplier:.0f}x.mp4"
-
-            return self.concatenate_training_videos(
-                run_id=run_id,
                 output_filename=output_filename,
-                speed_multiplier=speed_multiplier
             )
+            if overlay_path:
+                return overlay_path
+            logger.warning("Overlay timelapse generation failed; falling back to plain concatenation.")
+
+        # Fall back to concatenating existing training recordings to preserve full run coverage.
+        manifest = ensure_manifest(run_id, self.video_training_dir, self.config.get('paths', {}).get('ffmpeg_path'))
+        segments = manifest.get("segments", [])
+        if not segments:
+            logger.error(f"No training videos found for run {run_id}")
+            return None
+
+        total_duration = sum([float(seg.get("duration_sec") or 0.0) for seg in segments])
+        if target_duration and total_duration > 0:
+            speed_multiplier = total_duration / target_duration
+            logger.info(f"TIMELAPSE target_duration={target_duration}s => recalculated speed_multiplier={speed_multiplier:.2f}x")
+
+        if output_filename is None:
+            output_filename = f"{run_id}_timelapse_{speed_multiplier:.0f}x.mp4"
+
+        return self.concatenate_training_videos(
+            run_id=run_id,
+            output_filename=output_filename,
+            speed_multiplier=speed_multiplier,
+            overlays_requested=add_overlays
+        )
 
     def compare_multiple_runs(
         self,
@@ -382,94 +380,93 @@ class VideoPostProcessor:
             labels = run_ids
 
         try:
-            clips = []
-
+            selected_paths: List[Path] = []
             for run_id in run_ids:
-                run_dir = self.video_training_dir / run_id
-                if not run_dir.exists():
-                    logger.warning(f"Training video directory not found: {run_dir}")
-                    continue
-
-                # Get first episode as representative sample
-                video_files = sorted(run_dir.glob("env_0-episode-*.mp4"))
-                if not video_files:
+                manifest = ensure_manifest(run_id, self.video_training_dir, self.config.get('paths', {}).get('ffmpeg_path'))
+                segments = manifest.get("segments", [])
+                if not segments:
                     logger.warning(f"No videos found for run: {run_id}")
                     continue
+                seg_path = self.video_training_dir / run_id / segments[0]["path"]
+                selected_paths.append(seg_path)
+                logger.info(f"Comparison uses first clip for {run_id}: {seg_path.name}")
 
-                # Use first episode
-                video_file = video_files[0]
-                logger.info(f"Loading video for {run_id}: {video_file}")
-                clip = VideoFileClip(str(video_file))
-
-                # Trim to desired duration
-                if clip.duration > clip_duration:
-                    clip = clip.subclipped(0, clip_duration)
-
-                clips.append(clip)
-
-            if not clips:
+            if not selected_paths:
                 logger.error("No clips found for comparison")
                 return None
 
-            # Create layout (similar to milestone progression)
-            if layout == "horizontal":
-                target_width = 640 // len(clips)
-                target_height = 480
-                resized_clips = [clip.resized((target_width, target_height)) for clip in clips]
-                final_clip = clips_array([resized_clips])
-
-            elif layout == "vertical":
-                target_width = 640
-                target_height = 480 // len(clips)
-                resized_clips = [clip.resized((target_width, target_height)) for clip in clips]
-                final_clip = clips_array([[clip] for clip in resized_clips])
-
-            elif layout == "grid":
-                import math
-                grid_size = math.ceil(math.sqrt(len(clips)))
-                target_width = 640 // grid_size
-                target_height = 480 // grid_size
-                resized_clips = [clip.resized((target_width, target_height)) for clip in clips]
-
-                # Pad clips to fill grid
-                while len(resized_clips) < grid_size * grid_size:
-                    black_clip = ImageClip(
-                        [[0, 0, 0]] * target_height * target_width,
-                        duration=clip_duration
-                    ).set_duration(clip_duration)
-                    resized_clips.append(black_clip)
-
-                # Arrange in grid
-                rows = []
-                for i in range(grid_size):
-                    row = resized_clips[i * grid_size:(i + 1) * grid_size]
-                    rows.append(row)
-                final_clip = clips_array(rows)
-            else:
-                logger.error(f"Unknown layout: {layout}")
-                return None
-
-            # Generate output filename
             if output_filename is None:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_filename = f"comparison_{timestamp}.mp4"
 
-            output_path = self.video_output_dir / output_filename
+            output_path = self.video_output_dir / "comparisons" / output_filename
+            output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Write output video
-            logger.info(f"Writing comparison video: {output_path}")
-            final_clip.write_videofile(
+            inputs: List[str] = []
+            filter_parts: List[str] = []
+            target_w = 320
+            target_h = 240
+            for idx, seg_path in enumerate(selected_paths):
+                inputs += ["-i", str(seg_path)]
+                filter_parts.append(
+                    f"[{idx}:v]trim=duration={clip_duration},setpts=PTS-STARTPTS,"
+                    f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+                    f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2[c{idx}]"
+                )
+
+            n = len(selected_paths)
+            if n == 1:
+                stack_expr = "[c0]setsar=1[outv]"
+            elif layout == "vertical":
+                stack_expr = "".join([f"[c{i}]" for i in range(n)]) + f"vstack=inputs={n}[outv]"
+            elif layout == "grid":
+                cols = math.ceil(math.sqrt(n))
+                rows = math.ceil(n / cols)
+                layout_parts = []
+                for i in range(n):
+                    col = i % cols
+                    row = i // cols
+                    layout_parts.append(f"{col*target_w}_{row*target_h}")
+                layout_str = "|".join(layout_parts)
+                stack_expr = "".join([f"[c{i}]" for i in range(n)]) + f"xstack=inputs={n}:layout={layout_str}[outv]"
+            else:
+                stack_expr = "".join([f"[c{i}]" for i in range(n)]) + f"hstack=inputs={n}[outv]"
+
+            filter_complex = ";".join(filter_parts + [stack_expr])
+
+            cmd = [
+                self.ffmpeg_bin,
+                "-hide_banner",
+                "-y",
+                *inputs,
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[outv]",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
                 str(output_path),
-                codec='libx264',
-                audio=False,
-                preset='medium',
-                logger=None
-            )
+            ]
 
-            # Clean up
-            for clip in clips:
-                clip.close()
-            final_clip.close()
+            logger.info(f"COMPARISON ffmpeg command: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
+
+            prov = {
+                "run_ids": run_ids,
+                "output": str(output_path),
+                "selection_policy": "FIRST_CLIP",
+                "layout": layout,
+                "clip_duration": clip_duration,
+                "generator": "video_post_processor_comparison_v1",
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            prov_path = output_path.with_suffix(output_path.suffix + ".json")
+            prov_path.write_text(json.dumps(prov, indent=2), encoding="utf-8")
 
             logger.info(f"Successfully created comparison video: {output_path}")
             return str(output_path)
@@ -1059,21 +1056,27 @@ class VideoPostProcessor:
 
             logger.info(f"Speeding up video by {speed_multiplier}x")
 
-            clip = VideoFileClip(str(temp_output))
-            sped_up_clip = clip.with_speed_scaled(speed_multiplier)
-
-            sped_up_clip.write_videofile(
+            cmd = [
+                self.ffmpeg_bin,
+                "-hide_banner",
+                "-y",
+                "-i",
+                str(temp_output),
+                "-filter:v",
+                f"setpts=PTS/{speed_multiplier}",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "23",
                 str(output_path),
-                codec='libx264',
-                audio=False,
-                preset='medium',
-                logger=None
-            )
+            ]
+            subprocess.run(cmd, check=True)
 
             # Clean up
-            clip.close()
-            sped_up_clip.close()
-            temp_output.unlink()  # Delete temporary file
+            temp_output.unlink(missing_ok=True)  # Delete temporary file
 
             logger.info(f"Successfully created time-lapse with overlays: {output_path}")
             return str(output_path)
@@ -1083,4 +1086,3 @@ class VideoPostProcessor:
             import traceback
             traceback.print_exc()
             return None
-

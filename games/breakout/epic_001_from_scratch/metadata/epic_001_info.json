@@ -2,14 +2,14 @@
   "epic_name": "Epic 001: Complete learning from zero",
   "game": "Breakout",
   "description": "Complete learning from zero - random play to competent performance",
-  "start_date": "2025-10-15",
-  "planned_hours": 1,
+  "start_date": "2025-12-21",
+  "planned_hours": 10,
   "status": "completed",
   "environment": "BreakoutNoFrameskip-v4",
   "epic_number": 1,
   "continues_from_epic": null,
   "previous_model": null,
   "training_type": "from_scratch",
-  "completion_date": "2025-10-15",
+  "completion_date": "2025-12-21",
   "final_model_path": "games\\breakout\\epic_001_from_scratch\\models\\final\\epic_001_final_model.zip"
 }

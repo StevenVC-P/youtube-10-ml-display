@@ -5,6 +5,8 @@ paths:
   videos_milestones: "games/breakout/epic_001_from_scratch/videos/individual_hours"
   videos_eval: "video/eval"
   videos_parts: "video/render/parts"
+  videos_training: "video/training" # Training video recordings
+  videos_output: "video/output" # Post-processed videos (time-lapses, compilations, comparisons)
   logs_tb: "games/breakout/epic_001_from_scratch/logs/tensorboard"
   models: "games/breakout/epic_001_from_scratch/models/checkpoints"
   ffmpeg_path: "C:\\Users\\steve\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.0-full_build\\bin\\ffmpeg.exe"
@@ -41,6 +43,18 @@ recording:
   eval_every_steps: 100000
   eval_episodes: 2
 
+# Training video recording (Option D: Smart Recording)
+training_video:
+  enabled: true # Enable/disable training video recording
+  record_env_index: 0 # Which environment to record (0 = first env out of 16)
+  fps: 3 # Frame sampling rate (3 FPS = every 10th frame at 30 FPS game speed)
+  segment_duration_minutes: 30 # Create new video segment every 30 minutes
+  video_quality_crf: 23 # Video compression quality (18=high, 23=default, 28=lower)
+  resolution: [480, 360] # Video resolution (smaller = less storage)
+  codec: "libx264" # Video codec
+  preset: "veryfast" # Encoding speed preset (ultrafast, veryfast, fast, medium, slow)
+  output_format: "mp4" # Output video format
+
 stream:
   enabled: true
   pane_size: [640, 480]
@@ -57,6 +71,13 @@ render:
   target_hours: 10
   music_path: "assets/music.mp3"
   add_titles: true
+
+# Showcase Mode (post-training, stochastic replay; defaults keep it off)
+showcase_mode: false
+showcase_exploration_rate: 0.10
+showcase_seed_base: 42
+showcase_stochastic_policy: true
+showcase_randomness_mode: "both"  # "stochastic" | "epsilon" | "both"
 
 video_tools:
   manifest:

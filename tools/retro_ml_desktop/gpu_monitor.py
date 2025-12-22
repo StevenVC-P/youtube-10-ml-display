@@ -25,6 +25,13 @@ import torch
 
 logger = logging.getLogger(__name__)
 
+# Optional NVML support for accurate utilization/memory/temperature/power
+try:
+    import pynvml
+    _pynvml_available = True
+except Exception:
+    _pynvml_available = False
+
 
 @dataclass
 class GPUInfo:
@@ -69,6 +76,7 @@ class GPUMonitor:
         self._monitor_thread: Optional[threading.Thread] = None
         self._callbacks: List[Callable[[GPUMetrics], None]] = []
         self._lock = threading.Lock()
+        self._nvml_handle = None
         
         # Detect GPU on initialization
         self.gpu_info = self._detect_gpu()
@@ -86,6 +94,17 @@ class GPUMonitor:
             total_memory = torch.cuda.get_device_properties(device_index).total_memory
             total_memory_gb = total_memory / (1024 ** 3)  # Convert bytes to GB
             cuda_capability = torch.cuda.get_device_capability(device_index)
+
+            # Initialize NVML if available for richer metrics
+            if _pynvml_available:
+                try:
+                    pynvml.nvmlInit()
+                    self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(device_index)
+                    mem_info = pynvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
+                    total_memory_gb = mem_info.total / (1024 ** 3)
+                except Exception as e:
+                    logger.warning(f"NVML init failed, falling back to torch-only metrics: {e}")
+                    self._nvml_handle = None
             
             gpu_info = GPUInfo(
                 index=device_index,
@@ -114,45 +133,77 @@ class GPUMonitor:
         
         try:
             device_index = self.gpu_info.index
-            
-            # Get memory info
-            memory_allocated = torch.cuda.memory_allocated(device_index)
-            memory_used_gb = memory_allocated / (1024 ** 3)
-            memory_percent = (memory_used_gb / self.gpu_info.total_memory_gb) * 100
-            
-            # Get utilization (requires pynvml, available through torch.cuda)
             utilization = 0
             temperature = None
             power_draw = None
             clock_speed = None
-            
-            try:
-                utilization = torch.cuda.utilization(device_index)
-            except Exception as e:
-                logger.debug(f"Could not get GPU utilization: {e}")
-            
-            try:
-                temperature = torch.cuda.temperature(device_index)
-            except Exception as e:
-                logger.debug(f"Could not get GPU temperature: {e}")
-            
-            try:
-                power_draw_mw = torch.cuda.power_draw(device_index)
-                power_draw = power_draw_mw / 1000.0  # Convert mW to W
-            except Exception as e:
-                logger.debug(f"Could not get GPU power draw: {e}")
-            
-            try:
-                clock_speed = torch.cuda.clock_rate(device_index)
-            except Exception as e:
-                logger.debug(f"Could not get GPU clock speed: {e}")
+            memory_used_gb = 0.0
+            memory_total_gb = self.gpu_info.total_memory_gb
+            memory_percent = 0.0
+
+            if self._nvml_handle:
+                try:
+                    util = pynvml.nvmlDeviceGetUtilizationRates(self._nvml_handle)
+                    utilization = util.gpu
+                except Exception as e:
+                    logger.debug(f"NVML utilization failed: {e}")
+
+                try:
+                    mem_info = pynvml.nvmlDeviceGetMemoryInfo(self._nvml_handle)
+                    memory_used_gb = mem_info.used / (1024 ** 3)
+                    memory_total_gb = mem_info.total / (1024 ** 3)
+                    memory_percent = (memory_used_gb / memory_total_gb) * 100 if memory_total_gb else 0.0
+                except Exception as e:
+                    logger.debug(f"NVML memory info failed: {e}")
+
+                try:
+                    temperature = pynvml.nvmlDeviceGetTemperature(self._nvml_handle, pynvml.NVML_TEMPERATURE_GPU)
+                except Exception as e:
+                    logger.debug(f"NVML temperature failed: {e}")
+
+                try:
+                    power_draw_mw = pynvml.nvmlDeviceGetPowerUsage(self._nvml_handle)
+                    power_draw = power_draw_mw / 1000.0
+                except Exception as e:
+                    logger.debug(f"NVML power draw failed: {e}")
+
+                try:
+                    clock_speed = pynvml.nvmlDeviceGetClockInfo(self._nvml_handle, pynvml.NVML_CLOCK_SM)
+                except Exception as e:
+                    logger.debug(f"NVML clock speed failed: {e}")
+            else:
+                # Torch-only fallback (limited fields)
+                memory_allocated = torch.cuda.memory_allocated(device_index)
+                memory_used_gb = memory_allocated / (1024 ** 3)
+                memory_percent = (memory_used_gb / self.gpu_info.total_memory_gb) * 100
+
+                try:
+                    utilization = torch.cuda.utilization(device_index)
+                except Exception as e:
+                    logger.debug(f"Could not get GPU utilization: {e}")
+                
+                try:
+                    temperature = torch.cuda.temperature(device_index)
+                except Exception as e:
+                    logger.debug(f"Could not get GPU temperature: {e}")
+                
+                try:
+                    power_draw_mw = torch.cuda.power_draw(device_index)
+                    power_draw = power_draw_mw / 1000.0  # Convert mW to W
+                except Exception as e:
+                    logger.debug(f"Could not get GPU power draw: {e}")
+                
+                try:
+                    clock_speed = torch.cuda.clock_rate(device_index)
+                except Exception as e:
+                    logger.debug(f"Could not get GPU clock speed: {e}")
             
             return GPUMetrics(
                 timestamp=time.time(),
                 gpu_index=device_index,
                 utilization_percent=utilization,
                 memory_used_gb=memory_used_gb,
-                memory_total_gb=self.gpu_info.total_memory_gb,
+                memory_total_gb=memory_total_gb,
                 memory_percent=memory_percent,
                 temperature_c=temperature,
                 power_draw_w=power_draw,
@@ -274,3 +325,43 @@ def get_gpu_monitor() -> GPUMonitor:
 
     return _gpu_monitor_instance
 
+
+def get_gpu_pid_vram_usage_mb(gpu_index: int = 0) -> dict:
+    """
+    Best-effort mapping of GPU PID -> used VRAM (MB) for an NVIDIA GPU.
+
+    Requires `pynvml`. If unavailable or unsupported, returns {}.
+    """
+    if not _pynvml_available:
+        return {}
+
+    try:
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(gpu_index)
+        processes = {}
+
+        # Prefer compute processes; fall back to graphics if needed.
+        try:
+            procs = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
+        except Exception:
+            procs = []
+
+        if not procs:
+            try:
+                procs = pynvml.nvmlDeviceGetGraphicsRunningProcesses(handle)
+            except Exception:
+                procs = []
+
+        for proc in procs:
+            try:
+                used_bytes = getattr(proc, "usedGpuMemory", None)
+                if used_bytes is None:
+                    continue
+                used_mb = float(used_bytes) / (1024.0 * 1024.0)
+                processes[int(proc.pid)] = used_mb
+            except Exception:
+                continue
+
+        return processes
+    except Exception:
+        return {}

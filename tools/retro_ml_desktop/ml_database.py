@@ -13,8 +13,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 import logging
+import os
 
 from .ml_metrics import TrainingMetrics, ExperimentRun, ExperimentConfig
+
+DEBUG_METRICS_INGESTION = os.getenv("DEBUG_METRICS_INGESTION") in ("1", "true", "True", "yes")
 
 
 class MetricsDatabase:
@@ -64,6 +67,15 @@ class MetricsDatabase:
             self._local.connection.execute("PRAGMA cache_size=10000")
         
         return self._local.connection
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """
+        Backwards-compatible accessor used by some UI code.
+
+        Returns the thread-local SQLite connection via the internal getter.
+        """
+        return self._get_connection()
     
     def _init_database(self):
         """Initialize database schema."""
@@ -78,6 +90,10 @@ class MetricsDatabase:
                     custom_name TEXT,
                     leg_number INTEGER DEFAULT 1,
                     base_run_id TEXT,
+                    root_name TEXT,
+                    display_name TEXT,
+                    branch_token TEXT,
+                    variant_index INTEGER,
                     start_time TEXT NOT NULL,
                     end_time TEXT,
                     status TEXT NOT NULL DEFAULT 'running',
@@ -134,6 +150,33 @@ class MetricsDatabase:
                 conn.execute("ALTER TABLE experiment_runs ADD COLUMN heartbeat_at TEXT")
             except sqlite3.OperationalError:
                 pass  # Column already exists
+
+            # Lineage/provenance columns (additive)
+            for column_sql in [
+                "ALTER TABLE experiment_runs ADD COLUMN root_name TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN display_name TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN branch_token TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN variant_index INTEGER",
+                "ALTER TABLE experiment_runs ADD COLUMN branch_id TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN parent_run_id TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN parent_checkpoint_path TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN parent_checkpoint_hash TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN config_path TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN config_hash TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN wrappers_hash TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN env_version TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN mode TEXT",
+                "ALTER TABLE experiment_runs ADD COLUMN deterministic INTEGER",
+                "ALTER TABLE experiment_runs ADD COLUMN epsilon REAL",
+                "ALTER TABLE experiment_runs ADD COLUMN start_timestep INTEGER",
+                "ALTER TABLE experiment_runs ADD COLUMN target_timestep INTEGER",
+                "ALTER TABLE experiment_runs ADD COLUMN end_timestep INTEGER",
+                "ALTER TABLE experiment_runs ADD COLUMN metadata_json TEXT"
+            ]:
+                try:
+                    conn.execute(column_sql)
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
 
             # Training metrics table
             conn.execute("""
@@ -262,6 +305,32 @@ class MetricsDatabase:
                 )
             """)
 
+            # GPU telemetry table (global GPU samples attributed to active runs)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS gpu_metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    ts TEXT NOT NULL,
+                    gpu_util_pct REAL,
+                    vram_used_mb REAL,
+                    vram_total_mb REAL,
+                    temp_c REAL,
+                    power_w REAL,
+                    FOREIGN KEY (run_id) REFERENCES experiment_runs (run_id)
+                )
+            """)
+
+            # Add attribution columns to existing databases (migration-safe)
+            for column_sql in [
+                "ALTER TABLE gpu_metrics ADD COLUMN pid INTEGER",
+                "ALTER TABLE gpu_metrics ADD COLUMN pid_vram_used_mb REAL",
+                "ALTER TABLE gpu_metrics ADD COLUMN run_gpu_util_est_pct REAL"
+            ]:
+                try:
+                    conn.execute(column_sql)
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+
             # Create indexes for performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_timestep ON training_metrics(run_id, timestep)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON training_metrics(timestamp)")
@@ -279,6 +348,8 @@ class MetricsDatabase:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_video_artifacts_created ON video_artifacts(created)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_training_videos_run_id ON training_videos(run_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_training_videos_status ON training_videos(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_gpu_metrics_run_ts ON gpu_metrics(run_id, ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_gpu_metrics_pid_ts ON gpu_metrics(pid, ts)")
 
             conn.commit()
     
@@ -302,17 +373,20 @@ class MetricsDatabase:
                 tags_json = json.dumps(run.tags) if run.tags else None
                 
                 conn.execute("""
-                    INSERT OR REPLACE INTO experiment_runs (
+                    INSERT OR IGNORE INTO experiment_runs (
                         run_id, experiment_name, custom_name, leg_number, base_run_id,
+                        root_name, display_name, branch_token, variant_index,
                         start_time, end_time, status,
                         current_timestep, leg_start_timestep, config_json, best_reward, final_reward,
                         convergence_timestep, model_path, log_path, video_path,
                         tensorboard_path, git_commit, python_version,
                         dependencies_json, description, status_note, tags_json, created_at,
                         updated_at, process_pid, process_paused
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     run.run_id, run.experiment_name, run.custom_name, run.leg_number, run.base_run_id,
+                    getattr(run, 'root_name', None), getattr(run, 'display_name', None),
+                    getattr(run, 'branch_token', None), getattr(run, 'variant_index', 1) or 1,
                     run.start_time.isoformat(),
                     run.end_time.isoformat() if run.end_time else None,
                     run.status, run.current_timestep, run.leg_start_timestep, config_json,
@@ -513,6 +587,10 @@ class MetricsDatabase:
                         custom_name=row['custom_name'] if 'custom_name' in row.keys() else None,
                         leg_number=row['leg_number'] if 'leg_number' in row.keys() else 1,
                         base_run_id=row['base_run_id'] if 'base_run_id' in row.keys() else None,
+                        root_name=row['root_name'] if 'root_name' in row.keys() else None,
+                        display_name=row['display_name'] if 'display_name' in row.keys() else None,
+                        branch_token=row['branch_token'] if 'branch_token' in row.keys() else None,
+                        variant_index=row['variant_index'] if 'variant_index' in row.keys() else 1,
                         start_time=datetime.fromisoformat(row['start_time']),
                         end_time=datetime.fromisoformat(row['end_time']) if row['end_time'] else None,
                         status=row['status'],
@@ -533,6 +611,15 @@ class MetricsDatabase:
                         status_note=row['status_note'] if 'status_note' in row.keys() else None,
                         tags=tags
                     )
+                    # Attach lineage/provenance extras that aren't part of ExperimentRun dataclass
+                    if 'branch_id' in row.keys():
+                        run.branch_id = row['branch_id']
+                    if 'parent_run_id' in row.keys():
+                        run.parent_run_id = row['parent_run_id']
+                    if 'target_timestep' in row.keys():
+                        run.target_timestep = row['target_timestep']
+                    if 'start_timestep' in row.keys():
+                        run.start_timestep = row['start_timestep']
                     runs.append(run)
 
                 return runs
@@ -582,6 +669,46 @@ class MetricsDatabase:
             end_time=datetime.now()
         )
     
+    def get_branch_tokens(self, base_run_id: str) -> List[str]:
+        """Get distinct branch tokens for a lineage."""
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                cursor = conn.execute(
+                    "SELECT DISTINCT branch_token FROM experiment_runs WHERE base_run_id = ? AND branch_token IS NOT NULL",
+                    (base_run_id,)
+                )
+                return [row[0] for row in cursor.fetchall() if row[0]]
+        except Exception as e:
+            self.logger.error(f"Failed to get branch tokens for {base_run_id}: {e}")
+            return []
+
+    def allocate_variant_index(self, base_run_id: str, branch_token: str, leg_number: int) -> int:
+        """
+        Allocate the next variant index for a slot (base_run_id, branch_token, leg_number).
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                conn.execute("BEGIN IMMEDIATE")
+                cursor = conn.execute(
+                    """
+                    SELECT COALESCE(MAX(variant_index), 0)
+                    FROM experiment_runs
+                    WHERE base_run_id = ?
+                      AND branch_token = ?
+                      AND leg_number = ?
+                    """,
+                    (base_run_id, branch_token, leg_number)
+                )
+                current_max = cursor.fetchone()[0] or 0
+                next_variant = current_max + 1
+                conn.commit()
+                return next_variant
+        except Exception as e:
+            self.logger.error(f"Failed to allocate variant index for {base_run_id}/{branch_token}/leg{leg_number}: {e}")
+            return 1
+    
     def add_training_metrics(self, metrics: TrainingMetrics) -> bool:
         """
         Add training metrics for a timestep.
@@ -616,6 +743,11 @@ class MetricsDatabase:
                     metrics.memory_mb, metrics.gpu_percent, metrics.gpu_memory_mb,
                     metrics.gradient_norm, metrics.weight_norm
                 ))
+
+                if DEBUG_METRICS_INGESTION:
+                    self.logger.warning(
+                        f"[METRICS DEBUG] insert run_id={metrics.run_id} step={metrics.timestep} progress={metrics.progress_pct:.2f}"
+                    )
                 
                 conn.commit()
                 return True
@@ -673,6 +805,10 @@ class MetricsDatabase:
                         custom_name=row['custom_name'] if 'custom_name' in row.keys() else None,
                         leg_number=row['leg_number'] if 'leg_number' in row.keys() else 1,
                         base_run_id=row['base_run_id'] if 'base_run_id' in row.keys() else None,
+                        root_name=row['root_name'] if 'root_name' in row.keys() else None,
+                        display_name=row['display_name'] if 'display_name' in row.keys() else None,
+                        branch_token=row['branch_token'] if 'branch_token' in row.keys() else None,
+                        variant_index=row['variant_index'] if 'variant_index' in row.keys() else 1,
                         start_time=datetime.fromisoformat(row['start_time']),
                         end_time=datetime.fromisoformat(row['end_time']) if row['end_time'] else None,
                         status=row['status'],
@@ -693,6 +829,14 @@ class MetricsDatabase:
                         status_note=row['status_note'] if 'status_note' in row.keys() else None,
                         tags=tags
                     )
+                    if 'branch_id' in row.keys():
+                        run.branch_id = row['branch_id']
+                    if 'parent_run_id' in row.keys():
+                        run.parent_run_id = row['parent_run_id']
+                    if 'target_timestep' in row.keys():
+                        run.target_timestep = row['target_timestep']
+                    if 'start_timestep' in row.keys():
+                        run.start_timestep = row['start_timestep']
                     runs.append(run)
                 
                 return runs
@@ -1672,3 +1816,158 @@ class MetricsDatabase:
         except Exception as e:
             self.logger.error(f"Failed to get training videos: {e}")
             return []
+
+    # ========================================================================
+    # GPU Metrics Methods
+    # ========================================================================
+
+    def add_gpu_metric(
+        self,
+        run_id: str,
+        ts: Optional[str] = None,
+        gpu_util_pct: Optional[float] = None,
+        vram_used_mb: Optional[float] = None,
+        vram_total_mb: Optional[float] = None,
+        temp_c: Optional[float] = None,
+        power_w: Optional[float] = None,
+        pid: Optional[int] = None,
+        pid_vram_used_mb: Optional[float] = None,
+        run_gpu_util_est_pct: Optional[float] = None,
+    ) -> bool:
+        """Insert a GPU telemetry sample row for a run."""
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                ts_val = ts or datetime.now().isoformat()
+                conn.execute(
+                    """
+                    INSERT INTO gpu_metrics (
+                        run_id, ts, gpu_util_pct, vram_used_mb, vram_total_mb, temp_c, power_w,
+                        pid, pid_vram_used_mb, run_gpu_util_est_pct
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        ts_val,
+                        gpu_util_pct,
+                        vram_used_mb,
+                        vram_total_mb,
+                        temp_c,
+                        power_w,
+                        pid,
+                        pid_vram_used_mb,
+                        run_gpu_util_est_pct,
+                    ),
+                )
+                conn.commit()
+                return True
+        except Exception as e:
+            self.logger.error(f"Failed to insert gpu_metric for {run_id}: {e}")
+            return False
+
+    def get_latest_gpu_metric(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Get the most recent GPU telemetry row for a run."""
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                cursor = conn.execute(
+                    "SELECT * FROM gpu_metrics WHERE run_id = ? ORDER BY ts DESC LIMIT 1",
+                    (run_id,),
+                )
+                row = cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            self.logger.error(f"Failed to get latest gpu metric for {run_id}: {e}")
+            return None
+
+    def get_avg_gpu_metric(self, run_id: str, since_ts: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Get average GPU telemetry values for a run (optionally since a timestamp)."""
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                if since_ts:
+                    cursor = conn.execute(
+                        """
+                        SELECT
+                            AVG(gpu_util_pct) AS avg_gpu_util_pct,
+                            AVG(vram_used_mb) AS avg_vram_used_mb,
+                            MAX(vram_total_mb) AS vram_total_mb
+                        FROM gpu_metrics
+                        WHERE run_id = ? AND ts >= ?
+                        """,
+                        (run_id, since_ts),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """
+                        SELECT
+                            AVG(gpu_util_pct) AS avg_gpu_util_pct,
+                            AVG(vram_used_mb) AS avg_vram_used_mb,
+                            MAX(vram_total_mb) AS vram_total_mb
+                        FROM gpu_metrics
+                        WHERE run_id = ?
+                        """,
+                        (run_id,),
+                    )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                result = dict(row)
+                if result.get("avg_gpu_util_pct") is None and result.get("avg_vram_used_mb") is None:
+                    return None
+                return result
+        except Exception as e:
+            self.logger.error(f"Failed to get avg gpu metric for {run_id}: {e}")
+            return None
+
+    def get_latest_gpu_attribution(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Get the latest GPU telemetry row including attribution fields (if present)."""
+        return self.get_latest_gpu_metric(run_id)
+
+    def get_avg_gpu_attribution(self, run_id: str, since_ts: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get averaged GPU telemetry including attribution fields.
+
+        SQLite AVG ignores NULLs; attribution fields may legitimately be NULL when unavailable.
+        """
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                if since_ts:
+                    cursor = conn.execute(
+                        """
+                        SELECT
+                            AVG(gpu_util_pct) AS avg_gpu_util_pct,
+                            AVG(vram_used_mb) AS avg_vram_used_mb,
+                            MAX(vram_total_mb) AS vram_total_mb,
+                            AVG(pid_vram_used_mb) AS avg_pid_vram_used_mb,
+                            AVG(run_gpu_util_est_pct) AS avg_run_gpu_util_est_pct
+                        FROM gpu_metrics
+                        WHERE run_id = ? AND ts >= ?
+                        """,
+                        (run_id, since_ts),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """
+                        SELECT
+                            AVG(gpu_util_pct) AS avg_gpu_util_pct,
+                            AVG(vram_used_mb) AS avg_vram_used_mb,
+                            MAX(vram_total_mb) AS vram_total_mb,
+                            AVG(pid_vram_used_mb) AS avg_pid_vram_used_mb,
+                            AVG(run_gpu_util_est_pct) AS avg_run_gpu_util_est_pct
+                        FROM gpu_metrics
+                        WHERE run_id = ?
+                        """,
+                        (run_id,),
+                    )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                result = dict(row)
+                if result.get("avg_gpu_util_pct") is None and result.get("avg_vram_used_mb") is None:
+                    return None
+                return result
+        except Exception as e:
+            self.logger.error(f"Failed to get avg gpu attribution for {run_id}: {e}")
+            return None
