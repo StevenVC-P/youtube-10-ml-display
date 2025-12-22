@@ -8,6 +8,7 @@ from tkinter import ttk, messagebox, filedialog
 import os
 import sys
 import yaml
+import re
 import threading
 import logging
 import subprocess
@@ -52,6 +53,7 @@ from tools.retro_ml_desktop.widgets import (
     StatusBadge
 )
 from tools.retro_ml_desktop.theme import Theme
+from tools.retro_ml_desktop.naming import build_display_name, next_branch_token
 
 
 class RetroMLSimple:
@@ -110,6 +112,12 @@ class RetroMLSimple:
         # Connect database to process manager (Phase 1: Use set_database to initialize Experiment Manager)
         self.process_manager.set_database(self.ml_database)
 
+        # Background GPU telemetry sampler (writes global GPU samples per active run)
+        self._gpu_sampler_stop_event = threading.Event()
+        self._gpu_sampler_thread = None
+        self._gpu_sampler_init_thread = None
+        self._start_gpu_sampler_async()
+
         # Initialize CUDA diagnostics
         self.cuda_diagnostics = CUDADiagnostics()
 
@@ -144,6 +152,82 @@ class RetroMLSimple:
 
         # Start supervisor to keep runs alive if UI exits
         self._ensure_supervisor_running()
+
+    def _start_gpu_sampler_async(self):
+        """Kick off GPU telemetry without blocking UI startup (torch import can be slow)."""
+        if self._gpu_sampler_init_thread and self._gpu_sampler_init_thread.is_alive():
+            return
+
+        def _init_sampler():
+            try:
+                self._start_gpu_telemetry_sampler()
+            except Exception:
+                # Telemetry is optional; failures should not block the app.
+                return
+
+        self._gpu_sampler_init_thread = threading.Thread(
+            target=_init_sampler, daemon=True, name="GpuSamplerInit"
+        )
+        self._gpu_sampler_init_thread.start()
+
+    def _start_gpu_telemetry_sampler(self):
+        """Start background sampling of GPU metrics into the database for active runs."""
+        try:
+            from tools.retro_ml_desktop.gpu_monitor import get_gpu_monitor, get_gpu_pid_vram_usage_mb
+
+            gpu_monitor = get_gpu_monitor()
+            if not gpu_monitor.is_running:
+                gpu_monitor.start()
+
+            def sampler_loop():
+                while not self._gpu_sampler_stop_event.wait(2.0):
+                    try:
+                        metrics = gpu_monitor.get_current_metrics()
+                        if not metrics:
+                            continue
+
+                        active_run_pids = self.process_manager.get_active_run_pids()
+                        if not active_run_pids:
+                            continue
+
+                        ts = datetime.now().isoformat()
+                        vram_used_mb = float(metrics.memory_used_gb) * 1024.0
+                        vram_total_mb = float(metrics.memory_total_gb) * 1024.0
+
+                        pid_vram_map = get_gpu_pid_vram_usage_mb(gpu_index=0)
+                        active_pid_mem = 0.0
+                        for pid in active_run_pids.values():
+                            used = pid_vram_map.get(pid)
+                            if used and used > 0:
+                                active_pid_mem += float(used)
+
+                        for run_id, pid in active_run_pids.items():
+                            pid_vram_used_mb = pid_vram_map.get(pid)
+                            run_gpu_util_est_pct = None
+                            if active_pid_mem > 0 and pid_vram_used_mb and pid_vram_used_mb > 0:
+                                run_gpu_util_est_pct = float(metrics.utilization_percent) * (float(pid_vram_used_mb) / active_pid_mem)
+
+                            self.ml_database.add_gpu_metric(
+                                run_id=run_id,
+                                ts=ts,
+                                gpu_util_pct=float(metrics.utilization_percent),
+                                vram_used_mb=vram_used_mb,
+                                vram_total_mb=vram_total_mb,
+                                temp_c=float(metrics.temperature_c) if metrics.temperature_c is not None else None,
+                                power_w=float(metrics.power_draw_w) if metrics.power_draw_w is not None else None,
+                                pid=int(pid) if pid is not None else None,
+                                pid_vram_used_mb=float(pid_vram_used_mb) if pid_vram_used_mb is not None else None,
+                                run_gpu_util_est_pct=float(run_gpu_util_est_pct) if run_gpu_util_est_pct is not None else None,
+                            )
+                    except Exception:
+                        # Keep sampler resilient; avoid spamming the UI thread/logs.
+                        continue
+
+            self._gpu_sampler_thread = threading.Thread(target=sampler_loop, daemon=True, name="GpuTelemetrySampler")
+            self._gpu_sampler_thread.start()
+        except Exception:
+            # GPU telemetry is optional; do not break app init if unavailable.
+            return
 
     def _ensure_supervisor_running(self):
         """Start run supervisor if not already running."""
@@ -233,7 +317,7 @@ class RetroMLSimple:
 
         # CUDA Diagnostics button
         diagnostics_btn = ctk.CTkButton(
-            sidebar, text="🔍 CUDA Diagnostics", font=ctk.CTkFont(size=12),
+            sidebar, text="CUDA Diagnostics", font=ctk.CTkFont(size=12),
             height=35, command=self._show_cuda_diagnostics,
             **Theme.get_button_colors("info")
         )
@@ -275,15 +359,15 @@ class RetroMLSimple:
         available_gpus = len([gpu for gpu in gpu_info if gpu.available])
 
         resources_text = (
-            f"💻 CPU: {available_cpus}/{len(cpu_info)} cores available\n"
-            f"🎮 GPU: {available_gpus}/{len(gpu_info)} devices available\n"
-            f"🎯 Recommended: {recommendations['cpu_cores']} cores"
+            f"CPU: {available_cpus}/{len(cpu_info)} cores available\n"
+            f"GPU: {available_gpus}/{len(gpu_info)} devices available\n"
+            f"Recommended: {recommendations['cpu_cores']} cores"
         )
         ctk.CTkLabel(sidebar, text=resources_text, justify="left").pack(pady=5, padx=10, anchor="w")
 
         # Advanced resource selector button
         advanced_resources_btn = ctk.CTkButton(
-            sidebar, text="🔧 Advanced Resource Selection",
+            sidebar, text="Advanced Resource Selection",
             command=self._show_resource_selector,
             font=ctk.CTkFont(size=12),
             height=30
@@ -292,7 +376,7 @@ class RetroMLSimple:
 
         # RAM cleanup button
         ram_cleanup_btn = ctk.CTkButton(
-            sidebar, text="🧠 RAM Cleanup & Optimization",
+            sidebar, text="RAM Cleanup & Optimization",
             command=self._show_ram_cleanup,
             font=ctk.CTkFont(size=12),
             height=30
@@ -301,7 +385,7 @@ class RetroMLSimple:
 
         # Storage cleanup button
         storage_cleanup_btn = ctk.CTkButton(
-            sidebar, text="🗑️ Storage Cleanup",
+            sidebar, text="Storage Cleanup",
             command=self._show_storage_cleanup,
             font=ctk.CTkFont(size=12),
             height=30,
@@ -321,11 +405,11 @@ class RetroMLSimple:
                     font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(10, 5))
 
         controls_text = (
-            "• Stop: Gracefully terminate training\n"
-            "• Pause: Suspend training (resume later)\n"
-            "• Resume: Continue paused training\n"
-            "• Clear Data: Delete training outputs\n"
-            "• Remove: Remove from process list"
+            "- Stop: Gracefully terminate training\n"
+            "- Pause: Suspend training (resume later)\n"
+            "- Resume: Continue paused training\n"
+            "- Clear Data: Delete training outputs\n"
+            "- Remove: Remove from process list"
         )
 
         ctk.CTkLabel(controls_frame, text=controls_text,
@@ -339,9 +423,9 @@ class RetroMLSimple:
 
         # Create tabs
         self.processes_tab = self.tabview.add("Training Processes")
-        self.ml_dashboard_tab = self.tabview.add("🧪 ML Dashboard")
+        self.ml_dashboard_tab = self.tabview.add("ML Dashboard")
         self.videos_tab = self.tabview.add("Video Gallery")
-        self.settings_tab = self.tabview.add("⚙️ Settings")
+        self.settings_tab = self.tabview.add("Settings")
 
         # Setup each tab
         self._setup_processes_tab()
@@ -358,16 +442,16 @@ class RetroMLSimple:
         refresh_btn = ctk.CTkButton(controls_frame, text="Refresh", command=self._refresh_processes)
         refresh_btn.pack(side="left", padx=5, pady=5)
 
-        stop_btn = ctk.CTkButton(controls_frame, text="🛑 Stop Selected", command=self._stop_selected_process,
+        stop_btn = ctk.CTkButton(controls_frame, text="Stop Selected", command=self._stop_selected_process,
                                 **Theme.get_button_colors("danger"))
         stop_btn.pack(side="left", padx=5)
 
-        pause_btn = ctk.CTkButton(controls_frame, text="⏸️ Pause Selected", command=self._pause_selected_process,
+        pause_btn = ctk.CTkButton(controls_frame, text="Pause Selected", command=self._pause_selected_process,
                                  **Theme.get_button_colors("warning"))
         pause_btn.pack(side="left", padx=5)
 
-        resume_btn = ctk.CTkButton(controls_frame, text="▶️ Resume Selected", command=self._resume_selected_process,
-                                  **Theme.get_button_colors("success"))
+        resume_btn = ctk.CTkButton(controls_frame, text="Resume Selected", command=self._resume_selected_process,
+                                   **Theme.get_button_colors("success"))
         resume_btn.pack(side="left", padx=5)
 
         remove_btn = ctk.CTkButton(controls_frame, text="Remove Selected", command=self._remove_selected_process)
@@ -554,8 +638,8 @@ class RetroMLSimple:
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
         # Title
-        title_label = ctk.CTkLabel(main_frame, text="🎬 Training Video Gallery",
-                                  font=ctk.CTkFont(size=18, weight="bold"))
+        title_label = ctk.CTkLabel(main_frame, text="Training Video Gallery",
+                                   font=ctk.CTkFont(size=18, weight="bold"))
         title_label.pack(pady=(10, 20))
 
         # Controls frame
@@ -563,29 +647,29 @@ class RetroMLSimple:
         controls_frame.pack(fill="x", padx=10, pady=(0, 10))
 
         # Refresh videos button
-        refresh_videos_btn = ctk.CTkButton(controls_frame, text="🔄 Refresh Videos",
+        refresh_videos_btn = ctk.CTkButton(controls_frame, text="Refresh Videos",
                                          command=self._refresh_videos)
         refresh_videos_btn.pack(side="left", padx=5, pady=5)
 
         # Generate videos button (NEW!)
-        generate_videos_btn = ctk.CTkButton(controls_frame, text="🎥 Generate Videos from Training",
+        generate_videos_btn = ctk.CTkButton(controls_frame, text="Generate Videos from Training",
                                            command=self._generate_videos_dialog,
                                            **Theme.get_button_colors("primary"))
         generate_videos_btn.pack(side="left", padx=5, pady=5)
 
         # Video post-processing buttons (NEW!)
-        timelapse_btn = ctk.CTkButton(controls_frame, text="⏩ Create Time-Lapse",
+        timelapse_btn = ctk.CTkButton(controls_frame, text="Create Time-Lapse",
                                      command=self._create_timelapse_dialog,
                                      **Theme.get_button_colors("info"))
         timelapse_btn.pack(side="left", padx=5, pady=5)
 
-        progression_btn = ctk.CTkButton(controls_frame, text="📊 Milestone Progression",
+        progression_btn = ctk.CTkButton(controls_frame, text="Milestone Progression",
                                        command=self._create_progression_dialog,
                                        **Theme.get_button_colors("info"))
         progression_btn.pack(side="left", padx=5, pady=5)
 
         # Open video folder button
-        open_folder_btn = ctk.CTkButton(controls_frame, text="📁 Open Video Folder",
+        open_folder_btn = ctk.CTkButton(controls_frame, text="Open Video Folder",
                                        command=self._open_video_folder)
         open_folder_btn.pack(side="left", padx=5, pady=5)
 
@@ -635,20 +719,20 @@ class RetroMLSimple:
         action_frame = ctk.CTkFrame(main_frame)
         action_frame.pack(fill="x", padx=10, pady=5)
 
-        play_btn = ctk.CTkButton(action_frame, text="▶️ Play Video", command=self._play_selected_video,
+        play_btn = ctk.CTkButton(action_frame, text="Play Video", command=self._play_selected_video,
                                 **Theme.get_button_colors("success"))
         play_btn.pack(side="left", padx=5, pady=5)
 
-        player_btn = ctk.CTkButton(action_frame, text="🎬 Video Player", command=self._open_video_player)
+        player_btn = ctk.CTkButton(action_frame, text="Video Player", command=self._open_video_player)
         player_btn.pack(side="left", padx=5, pady=5)
 
-        preview_btn = ctk.CTkButton(action_frame, text="👁️ Quick Preview", command=self._preview_selected_video)
+        preview_btn = ctk.CTkButton(action_frame, text="Quick Preview", command=self._preview_selected_video)
         preview_btn.pack(side="left", padx=5, pady=5)
 
-        info_btn = ctk.CTkButton(action_frame, text="ℹ️ Video Info", command=self._show_video_info)
+        info_btn = ctk.CTkButton(action_frame, text="Video Info", command=self._show_video_info)
         info_btn.pack(side="left", padx=5, pady=5)
 
-        delete_btn = ctk.CTkButton(action_frame, text="🗑️ Delete Video", command=self._delete_selected_video,
+        delete_btn = ctk.CTkButton(action_frame, text="Delete Video", command=self._delete_selected_video,
                                   **Theme.get_button_colors("danger"))
         delete_btn.pack(side="right", padx=5, pady=5)
 
@@ -666,8 +750,8 @@ class RetroMLSimple:
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
         # Title
-        title_label = ctk.CTkLabel(main_frame, text="⚙️ Settings & Configuration",
-                                  font=ctk.CTkFont(size=18, weight="bold"))
+        title_label = ctk.CTkLabel(main_frame, text="Settings & Configuration",
+                                   font=ctk.CTkFont(size=18, weight="bold"))
         title_label.pack(pady=(10, 20))
 
         # Create scrollable frame for settings
@@ -678,7 +762,7 @@ class RetroMLSimple:
         rom_section = ctk.CTkFrame(scrollable_frame)
         rom_section.pack(fill="x", padx=10, pady=(0, 20))
 
-        rom_title = ctk.CTkLabel(rom_section, text="🎮 Atari ROM Installation",
+        rom_title = ctk.CTkLabel(rom_section, text="Atari ROM Installation",
                                 font=ctk.CTkFont(size=16, weight="bold"))
         rom_title.pack(pady=(15, 10), padx=15, anchor="w")
 
@@ -689,16 +773,16 @@ class RetroMLSimple:
         rom_status = self._check_rom_status()
 
         if rom_status['installed']:
-            status_icon = "✅"
-            status_text = f"ROMs Installed ({rom_status['count']} games available)"
+            status_prefix = "[OK]"
+            status_text = f"{status_prefix} ROMs Installed ({rom_status['count']} games available)"
             status_color = "green"
         else:
-            status_icon = "❌"
-            status_text = "ROMs Not Installed"
+            status_prefix = "[WARN]"
+            status_text = f"{status_prefix} ROMs Not Installed"
             status_color = "orange"
 
         self.rom_status_label = ctk.CTkLabel(rom_info_frame,
-                                            text=f"{status_icon} {status_text}",
+                                            text=status_text,
                                             font=ctk.CTkFont(size=14),
                                             text_color=status_color)
         self.rom_status_label.pack(pady=10, padx=10, anchor="w")
@@ -711,7 +795,7 @@ class RetroMLSimple:
         rom_desc.pack(pady=5, padx=10, anchor="w")
 
         # Install/Reinstall button
-        button_text = "🔄 Reinstall ROMs" if rom_status['installed'] else "📥 Install ROMs"
+        button_text = "Reinstall ROMs" if rom_status['installed'] else "Install ROMs"
         self.install_roms_btn = ctk.CTkButton(rom_section,
                                              text=button_text,
                                              command=self._install_roms_from_settings,
@@ -731,7 +815,7 @@ class RetroMLSimple:
         system_section = ctk.CTkFrame(scrollable_frame)
         system_section.pack(fill="x", padx=10, pady=(0, 20))
 
-        system_title = ctk.CTkLabel(system_section, text="💻 System Information",
+        system_title = ctk.CTkLabel(system_section, text="System Information",
                                    font=ctk.CTkFont(size=16, weight="bold"))
         system_title.pack(pady=(15, 10), padx=15, anchor="w")
 
@@ -739,10 +823,10 @@ class RetroMLSimple:
         if self.config_manager:
             caps = self.config_manager.config.get('system', {})
             system_info_text = (
-                f"GPU Detected: {'✅ Yes' if caps.get('gpu_detected') else '❌ No'}\n"
-                f"CUDA Available: {'✅ Yes' if caps.get('cuda_available') else '❌ No'}\n"
-                f"FFmpeg Available: {'✅ Yes' if caps.get('ffmpeg_available') else '❌ No'}\n"
-                f"Atari ROMs: {'✅ Installed' if caps.get('atari_roms_installed') else '❌ Not Installed'}"
+                f"GPU Detected: {'Yes' if caps.get('gpu_detected') else 'No'}\n"
+                f"CUDA Available: {'Yes' if caps.get('cuda_available') else 'No'}\n"
+                f"FFmpeg Available: {'Yes' if caps.get('ffmpeg_available') else 'No'}\n"
+                f"Atari ROMs: {'Installed' if caps.get('atari_roms_installed') else 'Not Installed'}"
             )
         else:
             system_info_text = "Configuration not available"
@@ -757,8 +841,8 @@ class RetroMLSimple:
         paths_section = ctk.CTkFrame(scrollable_frame)
         paths_section.pack(fill="x", padx=10, pady=(0, 20))
 
-        paths_title = ctk.CTkLabel(paths_section, text="📁 Configuration Paths",
-                                  font=ctk.CTkFont(size=16, weight="bold"))
+        paths_title = ctk.CTkLabel(paths_section, text="Configuration Paths",
+                                   font=ctk.CTkFont(size=16, weight="bold"))
         paths_title.pack(pady=(15, 10), padx=15, anchor="w")
 
         if self.config_manager:
@@ -807,7 +891,7 @@ class RetroMLSimple:
         self.install_roms_btn.configure(state="disabled")
         self.rom_progress_bar.pack(pady=5, padx=15, fill="x")
         self.rom_progress_bar.set(0)
-        self.rom_install_status.configure(text="📥 Installing ROMs...", text_color="blue")
+        self.rom_install_status.configure(text="Installing ROMs...", text_color="blue")
         self.rom_install_status.pack(pady=5, padx=15)
 
         def install_thread():
@@ -881,15 +965,15 @@ class RetroMLSimple:
     def _on_rom_install_success(self):
         """Handle successful ROM installation."""
         self.rom_progress_bar.set(1.0)
-        self.rom_install_status.configure(text="✅ ROMs installed successfully!", text_color="green")
+        self.rom_install_status.configure(text="ROMs installed successfully!", text_color="green")
 
         # Update ROM status
         rom_status = self._check_rom_status()
         self.rom_status_label.configure(
-            text=f"✅ ROMs Installed ({rom_status['count']} games available)",
+            text=f"ROMs Installed ({rom_status['count']} games available)",
             text_color="green"
         )
-        self.install_roms_btn.configure(text="🔄 Reinstall ROMs", state="normal")
+        self.install_roms_btn.configure(text="Reinstall ROMs", state="normal")
 
         # Update config if available
         if self.config_manager:
@@ -904,8 +988,8 @@ class RetroMLSimple:
         self.rom_progress_bar.set(0)
         self.rom_progress_bar.pack_forget()
         self.rom_install_status.configure(
-            text=f"❌ Installation failed: {error_msg}\n"
-                 "You can try installing manually: pip install autorom[accept-rom-license] && autorom --accept-license",
+            text=f"Installation failed: {error_msg}\n"
+                  "You can try installing manually: pip install autorom[accept-rom-license] && autorom --accept-license",
             text_color="red"
         )
         self.install_roms_btn.configure(state="normal")
@@ -953,15 +1037,15 @@ class RetroMLSimple:
             # Add visual status indicators
             status_display = process.status
             if process.status == "running":
-                status_display = "🟢 Running"
+                status_display = "Running"
             elif process.status == "paused":
-                status_display = "⏸️ Paused"
+                status_display = "Paused"
             elif process.status == "stopped":
-                status_display = "🔴 Stopped"
+                status_display = "Stopped"
             elif process.status == "finished":
-                status_display = "✅ Finished"
+                status_display = "Finished"
             elif process.status == "failed":
-                status_display = "❌ Failed"
+                status_display = "Failed"
 
             self.process_tree.insert("", "end", values=(
                 process.name,
@@ -1258,7 +1342,7 @@ class RetroMLSimple:
         training_frame = ctk.CTkFrame(process_frame)
         training_frame.pack(fill="x", padx=10, pady=5)
 
-        ctk.CTkLabel(training_frame, text="🧠 Training Progress",
+        ctk.CTkLabel(training_frame, text="Training Progress",
                     font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2))
 
         if progress_info['training']:
@@ -1268,36 +1352,36 @@ class RetroMLSimple:
             if 'leg_number' in training and training['leg_number'] > 1:
                 # Multi-leg run - show both leg progress and total progress
                 training_text = (
-                    f"📊 Leg {training['leg_number']} Progress: {training['leg_steps_completed']:,} / {training['leg_total_steps']:,} "
+                    f"Leg {training['leg_number']} Progress: {training['leg_steps_completed']:,} / {training['leg_total_steps']:,} "
                     f"({training['progress_pct']:.1f}%)\n"
-                    f"🎯 Total Progress: {training['total_timesteps_all_legs']:,} timesteps completed\n"
-                    f"⏱️ ETA: {training['eta']}\n"
-                    f"🎯 Current Reward: {training['current_reward']}\n"
-                    f"⚡ FPS: {training['fps']}\n"
-                    f"💾 Checkpoints: {training['checkpoints_saved']}"
+                    f"Total Progress: {training['total_timesteps_all_legs']:,} timesteps completed\n"
+                    f"ETA: {training['eta']}\n"
+                    f"Current Reward: {training['current_reward']}\n"
+                    f"FPS: {training['fps']}\n"
+                    f"Checkpoints: {training['checkpoints_saved']}"
                 )
             elif 'leg_number' in training:
                 # First leg - show simpler display
                 training_text = (
-                    f"📊 Progress: {training['current_steps']:,} / {training['total_steps']:,} "
+                    f"Progress: {training['current_steps']:,} / {training['total_steps']:,} "
                     f"({training['progress_pct']:.1f}%)\n"
-                    f"⏱️ ETA: {training['eta']}\n"
-                    f"🎯 Current Reward: {training['current_reward']}\n"
-                    f"⚡ FPS: {training['fps']}\n"
-                    f"💾 Checkpoints: {training['checkpoints_saved']}"
+                    f"ETA: {training['eta']}\n"
+                    f"Current Reward: {training['current_reward']}\n"
+                    f"FPS: {training['fps']}\n"
+                    f"Checkpoints: {training['checkpoints_saved']}"
                 )
             else:
                 # Fallback for runs without leg tracking
                 training_text = (
-                    f"📊 Timesteps: {training['current_steps']:,} / {training['total_steps']:,} "
+                    f"Timesteps: {training['current_steps']:,} / {training['total_steps']:,} "
                     f"({training['progress_pct']:.1f}%)\n"
-                    f"⏱️ ETA: {training['eta']}\n"
-                    f"🎯 Current Reward: {training['current_reward']}\n"
-                    f"⚡ FPS: {training['fps']}\n"
-                    f"💾 Checkpoints: {training['checkpoints_saved']}"
+                    f"ETA: {training['eta']}\n"
+                    f"Current Reward: {training['current_reward']}\n"
+                    f"FPS: {training['fps']}\n"
+                    f"Checkpoints: {training['checkpoints_saved']}"
                 )
         else:
-            training_text = "⏳ Training progress not available (starting up...)"
+            training_text = "Training progress not available (starting up...)"
 
         ctk.CTkLabel(training_frame, text=training_text, justify="left").pack(pady=2, padx=10)
 
@@ -1305,7 +1389,7 @@ class RetroMLSimple:
         video_frame = ctk.CTkFrame(process_frame)
         video_frame.pack(fill="x", padx=10, pady=5)
 
-        ctk.CTkLabel(video_frame, text="🎬 Video Generation Progress",
+        ctk.CTkLabel(video_frame, text="Video Generation Progress",
                     font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2))
 
         if progress_info['videos']:
@@ -1325,7 +1409,7 @@ class RetroMLSimple:
         files_frame = ctk.CTkFrame(process_frame)
         files_frame.pack(fill="x", padx=10, pady=(5, 10))
 
-        ctk.CTkLabel(files_frame, text="📁 Output Files",
+        ctk.CTkLabel(files_frame, text="Output Files",
                     font=ctk.CTkFont(weight="bold")).pack(pady=(5, 2))
 
         files_text = (
@@ -1712,10 +1796,19 @@ class RetroMLSimple:
             video_output_dir = self.project_root / "video" / "output"
             if video_output_dir.exists():
                 self._append_log(f"🔍 Scanning post-processed videos directory: {video_output_dir}")
+                # Videos directly under video/output
                 output_videos = self._scan_directory_videos(video_output_dir, "Post-Processed")
                 if output_videos:
                     self._append_log(f"  ✅ Found {len(output_videos)} post-processed video(s)")
                 videos.extend(output_videos)
+
+                # Videos inside per-run subdirectories (e.g., video/output/run-xxxx)
+                for subdir in video_output_dir.iterdir():
+                    if subdir.is_dir():
+                        sub_videos = self._scan_directory_videos(subdir, subdir.name)
+                        if sub_videos:
+                            self._append_log(f"  ✅ Found {len(sub_videos)} post-processed video(s) in {subdir.name}")
+                        videos.extend(sub_videos)
 
             # NEW: Check database for video_path entries (for custom output locations)
             if self.ml_database:
@@ -1976,6 +2069,14 @@ class RetroMLSimple:
                         # Try to get video duration (basic approach)
                         duration = self._get_video_duration(file_path)
 
+                        # Try to derive run id from filename (e.g., run-xxxx_*)
+                        run_label = training_run
+                        m = re.match(r'(run-[A-Za-z0-9]+)', file_path.stem)
+                        if m:
+                            run_label = m.group(1)
+                        elif file_path.parent.name.startswith("run-"):
+                            run_label = file_path.parent.name
+
                         # Detect post-processed video type from filename
                         detected_type = video_type
                         filename_lower = file_path.name.lower()
@@ -1995,7 +2096,7 @@ class RetroMLSimple:
                             'duration': duration,
                             'size': f"{size_mb:.1f} MB",
                             'created': created.strftime("%Y-%m-%d %H:%M"),
-                            'training_run': training_run
+                            'training_run': run_label
                         })
 
                     except Exception as e:
@@ -2283,43 +2384,22 @@ class RetroMLSimple:
     def _generate_videos_dialog(self):
         """Show dialog to generate videos from completed training runs."""
         try:
-            # Get all processes from process manager
-            tracked_processes = self.process_manager.get_processes()
-
-            # Also scan for any training runs with checkpoints (even if not currently tracked)
-            checkpoint_base = self.project_root / "models" / "checkpoints"
+            # DB-first: populate from the same accessor the dashboard uses so completed runs
+            # are always selectable (even if artifacts are missing).
+            db_runs = self.ml_database.get_experiment_runs()
             all_runs = []
-
-            # Add tracked processes
-            for process in tracked_processes:
+            for run in db_runs:
                 all_runs.append({
-                    'id': process.id,
-                    'name': process.name,
-                    'status': process.status,
-                    'tracked': True
+                    'id': run.run_id,  # canonical identifier
+                    'name': run.display_name or run.custom_name or run.run_id,
+                    'status': run.status,
+                    'tracked': False
                 })
-
-            # Scan for untracked runs with checkpoints
-            if checkpoint_base.exists():
-                for run_dir in checkpoint_base.iterdir():
-                    if run_dir.is_dir() and run_dir.name.startswith('run-'):
-                        run_id = run_dir.name
-                        # Check if already tracked
-                        if not any(r['id'] == run_id for r in all_runs):
-                            # Check if it has checkpoints
-                            milestone_dir = run_dir / "milestones"
-                            if milestone_dir.exists() and list(milestone_dir.glob("*.zip")):
-                                all_runs.append({
-                                    'id': run_id,
-                                    'name': f"Untracked Run ({run_id[:8]}...)",
-                                    'status': 'unknown',
-                                    'tracked': False
-                                })
 
             if not all_runs:
                 messagebox.showinfo("No Training Runs",
-                                  "No training runs with checkpoints found.\n\n"
-                                  "Start a training session first, or check that your training runs saved checkpoints.")
+                                  "No training runs found in the database.\n\n"
+                                  "Start a training session first.")
                 return
 
             # Create dialog
@@ -2359,6 +2439,7 @@ class RetroMLSimple:
             for run_info in all_runs:
                 # Check for checkpoints in the correct location: models/checkpoints/{run_id}/milestones/
                 checkpoint_dir = self.project_root / "models" / "checkpoints" / run_info['id'] / "milestones"
+                latest_path = self.project_root / "models" / "checkpoints" / run_info['id'] / "latest.zip"
 
                 # Count checkpoints
                 checkpoint_count = 0
@@ -2379,6 +2460,8 @@ class RetroMLSimple:
 
                 # Store target_hours in run_info for later use
                 run_info['target_hours'] = target_hours
+                run_info['milestone_zip_count'] = checkpoint_count
+                run_info['latest_exists'] = latest_path.exists()
 
                 # Status icon
                 status = run_info['status']
@@ -2393,7 +2476,12 @@ class RetroMLSimple:
 
                 # Add target hours to display if available
                 target_info = f" | Target: {target_hours}h" if target_hours else ""
-                display_text = f"{status_icon} {run_info['name']} - {run_info['id'][:8]}... ({checkpoint_count} checkpoints{target_info})"
+                latest_info = "latest: yes" if run_info['latest_exists'] else "latest: no"
+                if checkpoint_count > 0:
+                    artifact_info = f"milestones: {checkpoint_count}, {latest_info}"
+                else:
+                    artifact_info = f"no milestone checkpoints, {latest_info}"
+                display_text = f"{status_icon} {run_info['name']} | {run_info['id']} ({artifact_info}{target_info})"
                 runs_listbox.insert(tk.END, display_text)
                 run_data.append(run_info)
 
@@ -2463,6 +2551,8 @@ class RetroMLSimple:
                 selected_run = run_data[selection[0]]
                 run_id = selected_run['id']
                 run_name = selected_run['name']
+                milestone_zip_count = int(selected_run.get('milestone_zip_count') or 0)
+                latest_exists = bool(selected_run.get('latest_exists'))
 
                 try:
                     total_seconds = int(clip_var.get())
@@ -2470,6 +2560,20 @@ class RetroMLSimple:
                         raise ValueError("Video length must be positive")
                 except ValueError as e:
                     messagebox.showerror("Invalid Input", f"Invalid video length: {e}")
+                    return
+
+                # Do not silently omit runs: guard here with a clear reason.
+                # Note: post_training_video_generator.py does NOT currently match "latest.zip",
+                # so milestone zips are required for this UI path.
+                if milestone_zip_count <= 0:
+                    msg = (
+                        f"Cannot generate videos for {run_id}.\n\n"
+                        f"Missing required artifact: milestone checkpoints (*.zip)\n"
+                        f"Expected at: {self.project_root / 'models' / 'checkpoints' / run_id / 'milestones'}\n\n"
+                    )
+                    if latest_exists:
+                        msg += "Note: latest.zip exists, but the current post-training generator does not support it.\n"
+                    messagebox.showwarning("Missing Checkpoints", msg)
                     return
 
                 # The checkpoints are in models/checkpoints/{run_id}/milestones/
@@ -2582,27 +2686,20 @@ class RetroMLSimple:
             config = load_config(str(self.project_root / "conf" / "config.yaml"))
             processor = VideoPostProcessor(config)
 
-            # Find available training runs with recorded videos
+            # DB-first: show all runs (including completed) even if recordings are missing.
+            db_runs = self.ml_database.get_experiment_runs()
+            if not db_runs:
+                messagebox.showwarning("No Training Runs",
+                                     "No training runs found in the database.\n\n"
+                                     "Start a training session first.")
+                return
+
+            # Training-time recordings root (may not exist in checkpoint-only mode)
             training_dir = Path(config.get('paths', {}).get('videos_training', 'video/training'))
-
-            if not training_dir.exists():
-                messagebox.showwarning("No Training Videos",
-                                     "No training video directory found.\n\n"
-                                     "Training videos are recorded during training when enabled in config.")
-                return
-
-            # Get all run directories with videos
-            run_dirs = [d for d in training_dir.iterdir() if d.is_dir() and list(d.glob("*.mp4"))]
-
-            if not run_dirs:
-                messagebox.showwarning("No Training Videos",
-                                     "No training videos found.\n\n"
-                                     "Make sure training video recording is enabled in config.yaml.")
-                return
 
             # Create dialog
             dialog = ctk.CTkToplevel(self.root)
-            dialog.title("⏩ Create Time-Lapse Video")
+            dialog.title("Create Time-Lapse Video")
             dialog.geometry("650x600")  # Increased width and height
             dialog.transient(self.root)
             dialog.grab_set()
@@ -2612,8 +2709,8 @@ class RetroMLSimple:
             main_container.pack(fill="both", expand=True, padx=10, pady=10)
 
             # Title
-            title_label = ctk.CTkLabel(main_container, text="⏩ Create Time-Lapse from Training Videos",
-                                      font=ctk.CTkFont(size=16, weight="bold"))
+            title_label = ctk.CTkLabel(main_container, text="Create Time-Lapse from Training Videos",
+                                       font=ctk.CTkFont(size=16, weight="bold"))
             title_label.pack(pady=10)
 
             # Info
@@ -2635,22 +2732,17 @@ class RetroMLSimple:
 
             # Populate runs with custom names from database
             run_data = []
-            for run_dir in sorted(run_dirs, key=lambda d: d.stat().st_mtime, reverse=True):
-                video_count = len(list(run_dir.glob("*.mp4")))
-                run_id = run_dir.name
+            for run in db_runs:
+                run_id = run.run_id
+                display_name = run.display_name or run.custom_name or run_id
+                run_dir = training_dir / run_id
+                video_count = 0
+                if run_dir.exists():
+                    video_count = len(list(run_dir.glob("*.mp4")))
 
-                # Look up custom name from database
-                display_name = run_id
-                try:
-                    runs = self.ml_database.get_experiment_runs()
-                    matching_run = next((r for r in runs if r.run_id == run_id), None)
-                    if matching_run and matching_run.custom_name:
-                        display_name = matching_run.custom_name
-                except Exception:
-                    pass  # Fall back to run_id if database lookup fails
-
+                suffix = f"(recordings: {video_count})" if video_count > 0 else "(no training recordings)"
                 run_data.append({'id': run_id, 'dir': run_dir, 'video_count': video_count, 'display_name': display_name})
-                runs_listbox.insert(tk.END, f"{display_name} ({video_count} videos)")
+                runs_listbox.insert(tk.END, f"{display_name} | {run_id} {suffix}")
 
             # Speed settings
             speed_frame = ctk.CTkFrame(main_container)
@@ -2674,10 +2766,10 @@ class RetroMLSimple:
 
             ctk.CTkLabel(options_frame, text="Options:", font=ctk.CTkFont(size=12, weight="bold")).pack(pady=5)
 
-            overlays_var = tk.BooleanVar(value=True)
+            overlays_var = tk.BooleanVar(value=False)
             overlays_checkbox = ctk.CTkCheckBox(
                 options_frame,
-                text="✨ Include neural network overlays (shows AI learning)",
+                text="Include neural network overlays (shows AI learning)",
                 variable=overlays_var
             )
             overlays_checkbox.pack(pady=5)
@@ -2701,6 +2793,16 @@ class RetroMLSimple:
 
                 selected_run = run_data[selection[0]]
                 run_id = selected_run['id']
+                video_count = int(selected_run.get('video_count') or 0)
+
+                if video_count <= 0:
+                    messagebox.showwarning(
+                        "No Training Recordings",
+                        f"Run {run_id} has no training recordings.\n\n"
+                        f"Expected: {training_dir / run_id}/*.mp4\n\n"
+                        f"Tip: enable training video recording, or use checkpoint-based generation instead."
+                    )
+                    return
 
                 try:
                     speed = float(speed_var.get())
@@ -2737,9 +2839,9 @@ class RetroMLSimple:
                 thread = threading.Thread(target=process_thread, daemon=True)
                 thread.start()
 
-            create_btn = ctk.CTkButton(buttons_frame, text="⏩ Create Time-Lapse",
-                                      command=create_timelapse,
-                                      **Theme.get_button_colors("success"))
+            create_btn = ctk.CTkButton(buttons_frame, text="Create Time-Lapse",
+                                       command=create_timelapse,
+                                       **Theme.get_button_colors("success"))
             create_btn.pack(side="left", padx=5, pady=5)
 
             cancel_btn = ctk.CTkButton(buttons_frame, text="❌ Cancel",
@@ -2771,23 +2873,16 @@ class RetroMLSimple:
             config = load_config(str(self.project_root / "conf" / "config.yaml"))
             processor = VideoPostProcessor(config)
 
-            # Find available training runs with recorded videos
+            # DB-first: show all runs (including completed) even if recordings are missing.
+            db_runs = self.ml_database.get_experiment_runs()
+            if not db_runs:
+                messagebox.showwarning("No Training Runs",
+                                     "No training runs found in the database.\n\n"
+                                     "Start a training session first.")
+                return
+
+            # Training-time recordings root (may not exist in checkpoint-only mode)
             training_dir = Path(config.get('paths', {}).get('videos_training', 'video/training'))
-
-            if not training_dir.exists():
-                messagebox.showwarning("No Training Videos",
-                                     "No training video directory found.\n\n"
-                                     "Training videos are recorded during training when enabled in config.")
-                return
-
-            # Get all run directories with videos
-            run_dirs = [d for d in training_dir.iterdir() if d.is_dir() and list(d.glob("*.mp4"))]
-
-            if not run_dirs:
-                messagebox.showwarning("No Training Videos",
-                                     "No training videos found.\n\n"
-                                     "Make sure training video recording is enabled in config.yaml.")
-                return
 
             # Create dialog
             dialog = ctk.CTkToplevel(self.root)
@@ -2821,10 +2916,16 @@ class RetroMLSimple:
 
             # Populate runs
             run_data = []
-            for run_dir in sorted(run_dirs, key=lambda d: d.stat().st_mtime, reverse=True):
-                video_count = len(list(run_dir.glob("*.mp4")))
-                run_data.append({'id': run_dir.name, 'dir': run_dir, 'video_count': video_count})
-                runs_listbox.insert(tk.END, f"{run_dir.name} ({video_count} videos)")
+            for run in db_runs:
+                run_id = run.run_id
+                display_name = run.display_name or run.custom_name or run_id
+                run_dir = training_dir / run_id
+                video_count = 0
+                if run_dir.exists():
+                    video_count = len(list(run_dir.glob("*.mp4")))
+                suffix = f"(recordings: {video_count})" if video_count > 0 else "(no training recordings)"
+                run_data.append({'id': run_id, 'dir': run_dir, 'video_count': video_count, 'display_name': display_name})
+                runs_listbox.insert(tk.END, f"{display_name} | {run_id} {suffix}")
 
             # Layout settings
             layout_frame = ctk.CTkFrame(dialog)
@@ -2871,6 +2972,16 @@ class RetroMLSimple:
                 selected_run = run_data[selection[0]]
                 run_id = selected_run['id']
                 layout = layout_var.get()
+                video_count = int(selected_run.get('video_count') or 0)
+
+                if video_count <= 0:
+                    messagebox.showwarning(
+                        "No Training Recordings",
+                        f"Run {run_id} has no training recordings.\n\n"
+                        f"Expected: {training_dir / run_id}/*.mp4\n\n"
+                        f"Tip: enable training video recording."
+                    )
+                    return
 
                 try:
                     clip_duration = float(duration_var.get())
@@ -2982,25 +3093,60 @@ class RetroMLSimple:
             if run_mode == 'continue':
                 print(f"   Resume From: {config.get('resume_checkpoint')}")
 
+            requested_run_id = config.get('run_id')
+            if not requested_run_id:
+                requested_run_id = generate_run_id()
+                config['run_id'] = requested_run_id
+                print(f"[RUN FLOW] generated_run_id={requested_run_id} (config missing run_id)")
+
+            # Prepare extra args with Fast Mode support
+            extra_args = list(preset.get('extra_args', []))
+            if config.get('fast_mode'):
+                extra_args.append('--fast')
+
             # Create process
             process_id = self.process_manager.create_process(
                 game=config['game'],
                 algorithm=config['algorithm'],
-                run_id=config.get('run_id'),
+                run_id=requested_run_id,
                 total_timesteps=config.get('total_timesteps', preset['total_timesteps']),
                 vec_envs=preset['vec_envs'],
                 save_freq=preset['save_freq'],
                 resources=resources,
-                extra_args=preset.get('extra_args', []),
+                extra_args=extra_args,
                 custom_output_path=config.get('output_path'),
                 resume_from_checkpoint=config.get('resume_checkpoint'),
                 target_hours=config.get('target_hours'),
                 hyperparameters=config.get('hyperparameters'),
-                custom_name=config.get('custom_name')
+                training_video_enabled=config.get('training_video_enabled', False),
+                custom_name=config.get('custom_name'),
+                base_run_id=config.get('base_run_id'),
+                leg_index=config.get('leg_index'),
+                branch_id=config.get('branch_id'),
+                root_name=config.get('root_name'),
+                display_name=config.get('display_name'),
+                branch_token=config.get('branch_token'),
+                variant_index=config.get('variant_index'),
+                parent_run_id=config.get('parent_run_id'),
+                parent_checkpoint_path=config.get('parent_checkpoint_path'),
+                start_timestep=config.get('start_timestep', 0),
+                target_timestep=config.get('target_timestep')
             )
 
+            print(f"[RUN FLOW] requested_run_id={requested_run_id} returned_process_id={process_id}")
+            if process_id != requested_run_id:
+                mismatch_message = f"Run ID mismatch: requested {requested_run_id} but process manager returned {process_id}. Aborting launch."
+                logging.error(mismatch_message)
+                self._append_log(mismatch_message)
+                try:
+                    self.process_manager.stop_process(process_id)
+                except Exception:
+                    pass
+                return
+
             # Create experiment run in ML database
-            self._create_experiment_run(process_id, config, preset)
+            db_run_id, collector_run_id = self._create_experiment_run(process_id, config, preset)
+            print(f"[RUN FLOW] db_run_id={db_run_id} collector_run_id={collector_run_id}")
 
             # Start log streaming
             self.process_manager.start_log_stream(process_id, self._append_log)
@@ -3036,6 +3182,8 @@ class RetroMLSimple:
 
     def _create_experiment_run(self, process_id: str, config: Dict, preset: Dict):
         """Create an experiment run in the ML database and start metrics collection."""
+        db_run_id = None
+        collector_run_id = None
         try:
             from .ml_metrics import ExperimentRun, ExperimentConfig
 
@@ -3083,6 +3231,10 @@ class RetroMLSimple:
                 custom_name=config.get('custom_name'),
                 leg_number=leg_number,
                 base_run_id=config.get('base_run_id'),
+                root_name=config.get('root_name'),
+                display_name=config.get('display_name'),
+                branch_token=config.get('branch_token'),
+                variant_index=config.get('variant_index', 1),
                 start_time=datetime.now(),
                 status="running",
                 leg_start_timestep=config.get('leg_start_timestep', 0),
@@ -3094,7 +3246,25 @@ class RetroMLSimple:
             # Store in database
             success = self.ml_database.create_experiment_run(experiment_run)
             if success:
+                db_run_id = process_id
                 print(f"✅ Created experiment run in ML database: {process_id}")
+
+                # Persist lineage/provenance fields that are not part of ExperimentRun dataclass
+                self.ml_database.update_experiment_run(
+                    process_id,
+                    base_run_id=config.get('base_run_id'),
+                    leg_number=config.get('leg_number'),
+                    leg_start_timestep=config.get('leg_start_timestep', 0),
+                    branch_id=config.get('branch_id'),
+                    branch_token=config.get('branch_token'),
+                    root_name=config.get('root_name'),
+                    display_name=config.get('display_name'),
+                    variant_index=config.get('variant_index'),
+                    parent_run_id=config.get('parent_run_id'),
+                    parent_checkpoint_path=config.get('parent_checkpoint_path'),
+                    start_timestep=config.get('start_timestep'),
+                    target_timestep=config.get('target_timestep')
+                )
 
                 # Start metrics collection
                 def get_logs():
@@ -3119,6 +3289,7 @@ class RetroMLSimple:
                     pid=pid,
                     interval=5.0  # Collect metrics every 5 seconds
                 )
+                collector_run_id = process_id
                 print(f"✅ Started metrics collection for: {process_id}")
             else:
                 print(f"❌ Failed to create experiment run in ML database: {process_id}")
@@ -3126,6 +3297,8 @@ class RetroMLSimple:
         except Exception as e:
             print(f"❌ Error creating experiment run: {e}")
             self._append_log(f"Warning: Failed to create ML experiment tracking: {e}")
+
+        return db_run_id, collector_run_id
     
     def _show_exit_prompt(self) -> str:
         """Prompt user when active runs exist. Returns 'keep', 'pause', or 'cancel'."""
@@ -3377,6 +3550,10 @@ class RetroMLSimple:
             # Stop system monitoring
             self.system_monitor.stop_monitoring()
 
+            # Stop GPU telemetry sampler
+            if hasattr(self, "_gpu_sampler_stop_event") and self._gpu_sampler_stop_event:
+                self._gpu_sampler_stop_event.set()
+
             # Stop ML collector
             self.ml_collector.stop_all_collection()
 
@@ -3396,6 +3573,8 @@ class RetroMLSimple:
         finally:
             # Cleanup
             self.system_monitor.stop_monitoring()
+            if hasattr(self, "_gpu_sampler_stop_event") and self._gpu_sampler_stop_event:
+                self._gpu_sampler_stop_event.set()
             self.ml_collector.stop_all_collection()
             self.ml_database.close()
 
@@ -3410,7 +3589,7 @@ class CUDADiagnosticsDialog:
 
         # Create dialog window
         self.dialog = ctk.CTkToplevel(parent)
-        self.dialog.title("🔍 CUDA Diagnostics & Troubleshooting")
+        self.dialog.title("CUDA Diagnostics & Troubleshooting")
         self.dialog.geometry("800x600")
         self.dialog.transient(parent)
         self.dialog.grab_set()
@@ -3431,8 +3610,8 @@ class CUDADiagnosticsDialog:
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
         # Title
-        title_label = ctk.CTkLabel(main_frame, text="🔍 CUDA System Diagnostics",
-                                  font=ctk.CTkFont(size=20, weight="bold"))
+        title_label = ctk.CTkLabel(main_frame, text="CUDA System Diagnostics",
+                                   font=ctk.CTkFont(size=20, weight="bold"))
         title_label.pack(pady=(0, 20))
 
         # Generate and display report
@@ -3450,7 +3629,7 @@ class CUDADiagnosticsDialog:
         config_frame = ctk.CTkFrame(main_frame)
         config_frame.pack(fill="x", pady=(0, 20))
 
-        ctk.CTkLabel(config_frame, text="💡 Recommended Training Configuration",
+        ctk.CTkLabel(config_frame, text="Recommended Training Configuration",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(10, 5))
 
         config_text = []
@@ -3471,19 +3650,19 @@ class CUDADiagnosticsDialog:
         button_frame.pack(fill="x")
 
         # Refresh button
-        refresh_btn = ctk.CTkButton(button_frame, text="🔄 Refresh Diagnostics",
+        refresh_btn = ctk.CTkButton(button_frame, text="Refresh Diagnostics",
                                    command=self._refresh_diagnostics,
                                    **Theme.get_button_colors("success"))
         refresh_btn.pack(side="left", padx=(10, 5), pady=10)
 
         # Copy report button
-        copy_btn = ctk.CTkButton(button_frame, text="📋 Copy Report",
+        copy_btn = ctk.CTkButton(button_frame, text="Copy Report",
                                 command=self._copy_report,
                                 **Theme.get_button_colors("info"))
         copy_btn.pack(side="left", padx=5, pady=10)
 
         # Close button
-        close_btn = ctk.CTkButton(button_frame, text="✖️ Close",
+        close_btn = ctk.CTkButton(button_frame, text="Close",
                                  command=self.dialog.destroy,
                                  **Theme.get_button_colors("secondary"))
         close_btn.pack(side="right", padx=(5, 10), pady=10)
@@ -3532,7 +3711,7 @@ class StartTrainingDialog:
         
         # Create dialog window
         self.dialog = ctk.CTkToplevel(parent)
-        self.dialog.title("🎮 Start AI Training")
+        self.dialog.title("Start AI Training")
         self.dialog.geometry("900x800")
         self.dialog.transient(parent)
         self.dialog.grab_set()
@@ -3544,6 +3723,11 @@ class StartTrainingDialog:
         x = (self.dialog.winfo_screenwidth() // 2) - (900 // 2)
         y = (self.dialog.winfo_screenheight() // 2) - (800 // 2)
         self.dialog.geometry(f"900x800+{x}+{y}")
+
+        # Training video toggle (default off, controlled per run)
+        self.training_video_var = tk.BooleanVar(value=False)
+        # Fast Mode toggle (default off)
+        self.fast_mode_var = tk.BooleanVar(value=False)
 
         self._create_dialog_ui()
     
@@ -3558,8 +3742,8 @@ class StartTrainingDialog:
         main_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
         # Title
-        title_label = ctk.CTkLabel(main_frame, text="🎮 Start New AI Training",
-                                  font=ctk.CTkFont(size=20, weight="bold"))
+        title_label = ctk.CTkLabel(main_frame, text="Start New AI Training",
+                                   font=ctk.CTkFont(size=20, weight="bold"))
         title_label.pack(pady=(0, 15))
 
         # === SECTION 1: Game Selection (2-column layout) ===
@@ -3570,7 +3754,7 @@ class StartTrainingDialog:
         system_col = ctk.CTkFrame(game_selection_frame)
         system_col.pack(side="left", fill="both", expand=True, padx=(10, 5), pady=10)
 
-        ctk.CTkLabel(system_col, text="🕹️ Gaming System:",
+        ctk.CTkLabel(system_col, text="Gaming System:",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 5))
 
         self.system_var = tk.StringVar(value="Atari")
@@ -3583,7 +3767,7 @@ class StartTrainingDialog:
         game_col = ctk.CTkFrame(game_selection_frame)
         game_col.pack(side="left", fill="both", expand=True, padx=(5, 10), pady=10)
 
-        ctk.CTkLabel(game_col, text="🎯 Choose Your Game:",
+        ctk.CTkLabel(game_col, text="Choose Your Game:",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 5))
 
         # Initialize game options based on system
@@ -3603,7 +3787,7 @@ class StartTrainingDialog:
         name_col = ctk.CTkFrame(config_frame)
         name_col.pack(side="left", fill="both", expand=True, padx=(10, 5), pady=10)
 
-        ctk.CTkLabel(name_col, text="✏️ Experiment Name (Optional):",
+        ctk.CTkLabel(name_col, text="Experiment Name (Optional):",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 5))
 
         self.custom_name_var = tk.StringVar(value="")
@@ -3621,7 +3805,7 @@ class StartTrainingDialog:
         algo_col = ctk.CTkFrame(config_frame)
         algo_col.pack(side="left", fill="both", expand=True, padx=(5, 10), pady=10)
 
-        ctk.CTkLabel(algo_col, text="🤖 AI Algorithm:",
+        ctk.CTkLabel(algo_col, text="AI Algorithm:",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(0, 5))
 
         self.algo_var = tk.StringVar(value="PPO")
@@ -3643,7 +3827,7 @@ class StartTrainingDialog:
         run_mode_frame = ctk.CTkFrame(main_frame)
         run_mode_frame.pack(fill="x", pady=(0, 10))
 
-        ctk.CTkLabel(run_mode_frame, text="🔄 Training Mode:",
+        ctk.CTkLabel(run_mode_frame, text="Training Mode:",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(10, 5), padx=10)
 
         self.run_mode_var = tk.StringVar(value="new")
@@ -3652,12 +3836,12 @@ class StartTrainingDialog:
         mode_container = ctk.CTkFrame(run_mode_frame)
         mode_container.pack(fill="x", padx=10, pady=(0, 10))
 
-        new_run_radio = ctk.CTkRadioButton(mode_container, text="🆕 Start New Run",
-                                          variable=self.run_mode_var, value="new",
-                                          command=self._on_run_mode_changed)
+        new_run_radio = ctk.CTkRadioButton(mode_container, text="Start New Run",
+                                           variable=self.run_mode_var, value="new",
+                                           command=self._on_run_mode_changed)
         new_run_radio.pack(side="left", padx=(10, 20))
 
-        continue_run_radio = ctk.CTkRadioButton(mode_container, text="▶️ Continue Previous Run",
+        continue_run_radio = ctk.CTkRadioButton(mode_container, text="Continue Previous Run",
                                                variable=self.run_mode_var, value="continue",
                                                command=self._on_run_mode_changed)
         continue_run_radio.pack(side="left", padx=(0, 10))
@@ -3683,7 +3867,7 @@ class StartTrainingDialog:
         video_frame = ctk.CTkFrame(main_frame)
         video_frame.pack(fill="x", pady=(0, 10))
 
-        ctk.CTkLabel(video_frame, text="🎬 Target Video Length:",
+        ctk.CTkLabel(video_frame, text="Target Video Length:",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(10, 5), padx=10)
 
         # Time input frame
@@ -3733,6 +3917,57 @@ class StartTrainingDialog:
                                              text_color="gray")
         self.video_length_info.pack(anchor="w", padx=10, pady=(0, 10))
 
+        # Fast Mode (no live video)
+        fast_mode_frame = ctk.CTkFrame(main_frame)
+        fast_mode_frame.pack(fill="x", pady=(0, 10))
+
+        ctk.CTkLabel(
+            fast_mode_frame,
+            text="Training Speed Override:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor="w", pady=(10, 5), padx=10)
+
+        ctk.CTkCheckBox(
+            fast_mode_frame,
+            text="Fast Mode ⚡ (Disable live recording for max speed)",
+            variable=self.fast_mode_var,
+            command=self._on_fast_mode_changed
+        ).pack(anchor="w", padx=10, pady=(0, 5))
+
+        self.fast_mode_info = ctk.CTkLabel(
+            fast_mode_frame,
+            text="Videos will be auto-generated AFTER training completes.",
+            font=ctk.CTkFont(size=10),
+            text_color="gray"
+        )
+        self.fast_mode_info.pack(anchor="w", padx=10, pady=(0, 5))
+
+        # Separator
+        ctk.CTkFrame(main_frame, height=2, fg_color="gray30").pack(fill="x", pady=5)
+
+        # Training video recording opt-in
+        video_record_frame = ctk.CTkFrame(main_frame)
+        video_record_frame.pack(fill="x", pady=(0, 10))
+
+        ctk.CTkLabel(
+            video_record_frame,
+            text="Training Video Recording:",
+            font=ctk.CTkFont(size=14, weight="bold")
+        ).pack(anchor="w", pady=(10, 5), padx=10)
+
+        ctk.CTkCheckBox(
+            video_record_frame,
+            text="Record training-time footage (saved to video/training/<run_id>/)",
+            variable=self.training_video_var
+        ).pack(anchor="w", padx=10, pady=(0, 5))
+
+        ctk.CTkLabel(
+            video_record_frame,
+            text="Recommended: enable only for short runs or diagnostics.",
+            font=ctk.CTkFont(size=10),
+            text_color="gray"
+        ).pack(anchor="w", padx=10, pady=(0, 5))
+
         # Separator
         ctk.CTkFrame(main_frame, height=2, fg_color="gray30").pack(fill="x", pady=5)
 
@@ -3750,7 +3985,7 @@ class StartTrainingDialog:
                                    **Theme.get_button_colors("secondary"))
         toggle_btn.pack(side="left", padx=(0, 10))
 
-        ctk.CTkLabel(header_frame, text="⚙️ Training Hyperparameters (Optional)",
+        ctk.CTkLabel(header_frame, text="Training Hyperparameters (Optional)",
                     font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
 
         # Hyperparameters container (initially hidden)
@@ -3834,7 +4069,7 @@ class StartTrainingDialog:
         self.hyperparam_entries.append(entry)
 
         # Row 5: Preset buttons header
-        preset_header = ctk.CTkLabel(grid_frame, text="📋 Quick Presets:",
+        preset_header = ctk.CTkLabel(grid_frame, text="Quick Presets:",
                                      font=ctk.CTkFont(size=12, weight="bold"))
         preset_header.grid(row=5, column=0, columnspan=4, sticky="w", padx=5, pady=(10, 3))
 
@@ -3843,11 +4078,11 @@ class StartTrainingDialog:
         preset_btn_container.grid(row=6, column=0, columnspan=4, sticky="ew", padx=5, pady=(0, 5))
 
         presets_config = [
-            ("⚖️ Balanced", self._set_hyperparams_balanced, "Standard PPO settings"),
-            ("🔍 Explore", self._set_hyperparams_explore, "High exploration for discovery"),
-            ("🎯 Exploit", self._set_hyperparams_exploit, "Refine learned behaviors"),
-            ("⚡ Fast", self._set_hyperparams_fast, "Aggressive learning speed"),
-            ("🛡️ Stable", self._set_hyperparams_stable, "Conservative & stable")
+            ("Balanced", self._set_hyperparams_balanced, "Standard PPO settings"),
+            ("Explore", self._set_hyperparams_explore, "High exploration for discovery"),
+            ("Exploit", self._set_hyperparams_exploit, "Refine learned behaviors"),
+            ("Fast", self._set_hyperparams_fast, "Aggressive learning speed"),
+            ("Stable", self._set_hyperparams_stable, "Conservative & stable")
         ]
 
         self.hyperparam_preset_buttons = []
@@ -3861,7 +4096,7 @@ class StartTrainingDialog:
         # Locked warning label (initially hidden)
         self.hyperparam_locked_label = ctk.CTkLabel(
             grid_frame,
-            text="🔒 Hyperparameters locked to match original run",
+            text="Hyperparameters locked to match original run",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color="#FFA500"
         )
@@ -3872,8 +4107,8 @@ class StartTrainingDialog:
         info_frame.pack(fill="x", padx=10, pady=(3, 5))
 
         info_lines = [
-            "💡 Balanced: Standard settings | 🔍 Explore: Discovery (fixes +20 plateau) | 🎯 Exploit: Refine policy",
-            "⚡ Fast: Quick iteration (unstable) | 🛡️ Stable: Conservative & reliable"
+            "Balanced: Standard settings | Explore: Discovery (fixes +20 plateau) | Exploit: Refine policy",
+            "Fast: Quick iteration (unstable) | Stable: Conservative & reliable"
         ]
 
         for line in info_lines:
@@ -3887,18 +4122,12 @@ class StartTrainingDialog:
         self.resource_config = None
         self.run_id_var = tk.StringVar(value=generate_run_id())
 
-        # Use Documents folder or user's home directory for videos (cross-platform compatible)
-        try:
-            # Try to use Documents folder
-            import os
-            if sys.platform == 'win32':
-                docs_path = Path(os.environ.get('USERPROFILE', Path.home())) / 'Documents' / 'ML_Videos'
-            else:
-                docs_path = Path.home() / 'Documents' / 'ML_Videos'
-            default_video_path = str(docs_path)
-        except:
-            # Fallback to home directory
-            default_video_path = str(Path.home() / 'ML_Videos')
+        # Use project 'outputs' folder by default (user preference)
+        if hasattr(self, 'app') and self.app and hasattr(self.app, 'project_root'):
+             default_video_path = str(self.app.project_root / 'outputs')
+        else:
+             # Fallback if app reference missing, use generic outputs folder
+             default_video_path = "outputs"
 
         self.output_path_var = tk.StringVar(value=default_video_path)
 
@@ -3915,16 +4144,16 @@ class StartTrainingDialog:
         btn_container = ctk.CTkFrame(button_frame)
         btn_container.pack(fill="x", padx=20, pady=(0, 10))
 
-        cancel_btn = ctk.CTkButton(btn_container, text="❌ Cancel", command=self._cancel,
-                                  height=50, font=ctk.CTkFont(size=14, weight="bold"),
-                                  width=140,
-                                  **Theme.get_button_colors("secondary"))
+        cancel_btn = ctk.CTkButton(btn_container, text="Cancel", command=self._cancel,
+                                   height=50, font=ctk.CTkFont(size=14, weight="bold"),
+                                   width=140,
+                                   **Theme.get_button_colors("secondary"))
         cancel_btn.pack(side="right", padx=(10, 0))
 
-        start_btn = ctk.CTkButton(btn_container, text="🚀 Start AI Training", command=self._start,
-                                 height=50, font=ctk.CTkFont(size=14, weight="bold"),
-                                 width=200,
-                                 **Theme.get_button_colors("success"))
+        start_btn = ctk.CTkButton(btn_container, text="Start AI Training", command=self._start,
+                                  height=50, font=ctk.CTkFont(size=14, weight="bold"),
+                                  width=200,
+                                  **Theme.get_button_colors("success"))
         start_btn.pack(side="right", padx=(0, 10))
 
         # Simple summary display
@@ -4269,7 +4498,7 @@ class StartTrainingDialog:
                 previous_runs = ml_db.get_runs_by_game(game_env_id, exclude_active=True)
 
                 if previous_runs:
-                    # Format run options: "run_id - status - progress% - reward"
+                    # Format run options to show human-friendly name plus run ID for disambiguation
                     run_options = []
                     self.run_data = {}  # Store run data for later use
 
@@ -4279,9 +4508,13 @@ class StartTrainingDialog:
                         if run.config and run.config.total_timesteps:
                             progress = int((run.current_timestep / run.config.total_timesteps) * 100)
 
+                        # Prefer custom/experiment name; fall back to run_id
+                        name = getattr(run, 'display_name', None) or run.custom_name or run.experiment_name or run.run_id
+                        run_id_short = run.run_id[:8] + "..."
+
                         # Format display string
                         reward_str = f"{run.best_reward:.1f}" if run.best_reward else "N/A"
-                        display = f"{run.run_id} - {run.status} - {progress}% - Reward: {reward_str}"
+                        display = f"{name} ({run_id_short}) - {run.status} - {progress}% - Reward: {reward_str}"
                         run_options.append(display)
                         self.run_data[display] = run
 
@@ -4467,6 +4700,12 @@ class StartTrainingDialog:
                 self.memory_var.set(str(defaults['memory_limit_gb']))
             if 'gpu_id' in defaults:
                 self.gpu_var.set(defaults['gpu_id'])
+
+    def _on_fast_mode_changed(self):
+        """Handle Fast Mode toggle."""
+        if self.fast_mode_var.get():
+            # If Fast Mode is on, disable live recording since they are mutually exclusive
+            self.training_video_var.set(False)
     
     def _start(self):
         """Start training with current configuration."""
@@ -4491,6 +4730,11 @@ class StartTrainingDialog:
             custom_name = None
             leg_number = 1
             base_run_id = None
+            branch_id = "main"
+            root_name = None
+            branch_token = "A"
+            variant_index = 1
+            old_run_id = None
 
             if run_mode == "continue":
                 # Get the checkpoint path for the selected run
@@ -4512,7 +4756,12 @@ class StartTrainingDialog:
                     conn = ml_db.connection
                     cursor = conn.cursor()
                     cursor.execute(
-                        "SELECT custom_name, leg_number, base_run_id, current_timestep FROM experiment_runs WHERE run_id = ?",
+                        """
+                        SELECT custom_name, leg_number, base_run_id, current_timestep, branch_id, target_timestep,
+                               root_name, branch_token
+                        FROM experiment_runs
+                        WHERE run_id = ?
+                        """,
                         (old_run_id,)
                     )
                     row = cursor.fetchone()
@@ -4522,16 +4771,25 @@ class StartTrainingDialog:
                         leg_number = old_leg + 1
                         base_run_id = row[2] if row[2] else old_run_id  # Track original run
                         leg_start_timestep = row[3] if row[3] else 0  # Capture where this leg starts
+                        branch_id = row[4] if row[4] else "main"
+                        root_name = row[6] if row[6] else custom_name
+                        branch_token = row[7] if row[7] else "A"
+                    # Optional branch mode support (future): allocate next token
+                    if run_mode == "branch" and self.app and hasattr(self.app, 'process_manager') and hasattr(self.app.process_manager, 'ml_database'):
+                        existing_tokens = ml_db.get_branch_tokens(base_run_id or old_run_id)
+                        branch_token = next_branch_token(existing_tokens)
 
                 # Generate new run_id for this leg
                 run_id = generate_run_id()
             else:
                 # New run - use custom name if provided
                 custom_name = self.custom_name_var.get().strip() if self.custom_name_var.get() else None
+                root_name = custom_name or f"{algorithm}-{game_display}"
                 leg_number = 1
                 leg_start_timestep = 0  # First leg starts at 0
                 run_id = generate_run_id()
                 base_run_id = run_id  # First leg tracks itself
+                branch_token = "A"
 
             # Format video length for display
             hours = int(video_config['target_hours'])
@@ -4546,6 +4804,26 @@ class StartTrainingDialog:
             # Get hyperparameters from UI
             hyperparameters = self._get_hyperparameters()
 
+            # Compute absolute target timestep for lineage tracking
+            target_timestep = leg_start_timestep + video_config['timesteps']
+
+            # Resolve naming components and allocate variant index
+            if not root_name:
+                root_name = custom_name or base_run_id or run_id
+            if not branch_token:
+                branch_token = "A"
+
+            variant_index = 1
+            if self.app and hasattr(self.app, 'process_manager') and hasattr(self.app.process_manager, 'ml_database'):
+                ml_db = self.app.process_manager.ml_database
+                variant_index = ml_db.allocate_variant_index(
+                    base_run_id=base_run_id or run_id,
+                    branch_token=branch_token,
+                    leg_number=leg_number
+                )
+
+            display_name = build_display_name(root_name, leg_number, branch_token, variant_index)
+
             # Build result configuration
             self.result = {
                 'preset': 'custom',  # Always use custom for simple interface
@@ -4557,7 +4835,17 @@ class StartTrainingDialog:
                 'custom_name': custom_name,
                 'leg_number': leg_number,
                 'base_run_id': base_run_id,
+                'root_name': root_name,
+                'display_name': display_name,
+                'branch_token': branch_token,
+                'variant_index': variant_index,
+                'leg_index': leg_number,  # keep leg index aligned with leg number (1-based)
+                'branch_id': branch_id,
+                'parent_run_id': old_run_id if run_mode == "continue" else None,
+                'parent_checkpoint_path': resume_checkpoint if run_mode == "continue" else None,
                 'leg_start_timestep': leg_start_timestep,  # Track where this leg starts
+                'start_timestep': leg_start_timestep,
+                'target_timestep': target_timestep,
                 'total_timesteps': video_config['timesteps'],
                 'target_hours': video_config['target_hours'],
                 'milestone_videos': video_config['milestones'],
@@ -4571,7 +4859,9 @@ class StartTrainingDialog:
                 'memory_limit_gb': 16,
                 'gpu_id': 'auto',
                 # Add hyperparameters
-                'hyperparameters': hyperparameters
+                'hyperparameters': hyperparameters,
+                'training_video_enabled': bool(self.training_video_var.get()),
+                'fast_mode': bool(self.fast_mode_var.get())
             }
 
             self.dialog.destroy()

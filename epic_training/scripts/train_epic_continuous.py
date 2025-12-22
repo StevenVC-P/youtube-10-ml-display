@@ -15,6 +15,7 @@ Usage:
     python train_epic_continuous.py --game breakout --epic 2
     python train_epic_continuous.py --game breakout --epic 3 --hours 10
     python train_epic_continuous.py --game breakout --epic 2 --test
+    python train_epic_continuous.py --game breakout --epic 1 --fast  (Train fast, render later)
 """
 
 import os
@@ -22,11 +23,12 @@ import sys
 import argparse
 import shutil
 import json
+import subprocess
 from pathlib import Path
 from datetime import datetime
 
 # Add project root to path
-sys.path.append(str(Path(__file__).parent))
+sys.path.append(str(Path(__file__).parent.parent.parent))
 
 def get_epic_info(game: str, epic_num: int):
     """Get information about an epic with proper progression descriptions."""
@@ -71,10 +73,10 @@ def get_game_env_id(game: str):
         "asteroids": "AsteroidsNoFrameskip-v4",
         "pacman": "MsPacmanNoFrameskip-v4",
         "frogger": "FroggerNoFrameskip-v4",
-
+        
         # Gameboy Games (tetris-gymnasium - coded remake)
         "tetris": "tetris_gymnasium/Tetris",
-
+        
         # Gameboy Games (PyBoy - authentic emulation)
         "tetris_authentic": "tetris_gb_authentic",
         "tetris_gb_authentic": "tetris_gb_authentic",
@@ -82,7 +84,7 @@ def get_game_env_id(game: str):
         "super_mario_land_authentic": "super_mario_land_authentic",
         "kirby_authentic": "kirby_authentic",
         "kirbys_dream_land_authentic": "kirbys_dream_land_authentic",
-
+        
         # Gameboy Games (stable-retro - if available)
         "tetris_gb": "Tetris-GameBoy",
         "super_mario_land": "SuperMarioLand-GameBoy",
@@ -90,7 +92,7 @@ def get_game_env_id(game: str):
         "mario_land": "SuperMarioLand-GameBoy",
         "kirby": "KirbysDreamLand-GameBoy"
     }
-
+    
     return env_mapping.get(game.lower(), f"{game.title()}NoFrameskip-v4")
 
 def find_previous_epic_model(game: str, epic_num: int):
@@ -162,7 +164,7 @@ def setup_epic_directories(game: str, epic_num: int):
         'metadata_dir': epic_dir / "metadata"
     }
 
-def create_epic_config(game: str, epic_num: int, paths: dict, hours: int = 10, previous_model: str = None):
+def create_epic_config(game: str, epic_num: int, paths: dict, hours: int = 10, previous_model: str = None, fast_mode: bool = False):
     """Create configuration for the epic with optional model loading."""
     epic_name, epic_desc = get_epic_info(game, epic_num)
     env_id = get_game_env_id(game)
@@ -195,7 +197,12 @@ def create_epic_config(game: str, epic_num: int, paths: dict, hours: int = 10, p
         if previous_model:
             # Add a new section for model loading (use forward slashes for YAML compatibility)
             previous_model_yaml = previous_model.replace('\\', '/')
-            config_content += f'\n\n# Epic Continuity\nepic:\n  load_previous_model: "{previous_model_yaml}"\n  epic_number: {epic_num}\n'
+            config_content += f'\\n\\n# Epic Continuity\\nepic:\\n  load_previous_model: "{previous_model_yaml}"\\n  epic_number: {epic_num}\\n'
+            
+        # Fast Mode Overrides
+        if fast_mode:
+            print("🚀 Fast Mode: Disabling live video recording to maximize training speed")
+            config_content += '\\n\\n# Fast Mode Overrides\\nrecording:\\n  milestone_clip_seconds: 0  # Disable partial clips\\n\\ntraining_video:\\n  enabled: false  # Disable smart recording\\n'
         
         # Save epic-specific config
         epic_config_path = paths['config_dir'] / "config.yaml"
@@ -264,28 +271,92 @@ def validate_epic_progression(game: str, epic_num: int):
     
     return True
 
-def launch_continuous_training(game: str, epic_num: int, hours: int = 10, test_mode: bool = False):
+def run_post_training_render(game: str, epic_num: int, paths: dict, config_path: Path, hours: int = 10):
+    """Run post-training video generation."""
+    print(f"\\n🎥 STARTING POST-TRAINING VIDEO RENDER")
+    print(f"=" * 60)
+    
+    # Find post-training generator script
+    # It should be in the training directory relative to project root
+    script_path = Path("training") / "post_training_video_generator.py"
+    
+    if not script_path.exists():
+        print(f"❌ Does not exist: {script_path}")
+        # Try finding it relative to this script
+        script_path = Path(__file__).parent.parent.parent / "training" / "post_training_video_generator.py"
+        if not script_path.exists():
+             print(f"❌ Cannot find post-training generator script at {script_path}")
+             return False
+
+    checkpoint_dir = paths['models_dir'] / "checkpoints"
+    
+    # Determine full output video path (Video/Merged Epic)
+    output_dir = paths['videos_dir'] / "merged_epic"
+    
+    total_seconds = hours * 3600
+    
+    cmd = [
+        sys.executable, str(script_path),
+        "--model-dir", str(checkpoint_dir),
+        "--output-dir", str(output_dir),
+        "--config", str(config_path),
+        "--total-seconds", str(total_seconds)  # Generate single continuous video
+    ]
+    
+    print(f"Command: {' '.join(cmd)}")
+    
+    try:
+        process = subprocess.run(cmd, cwd=Path.cwd())
+        
+        if process.returncode == 0:
+            print("✅ Post-training render completed successfully!")
+            return True
+        else:
+            print(f"❌ Post-training render failed with return code: {process.returncode}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Error during post-training render: {e}")
+        return False
+
+def launch_continuous_training(game: str, epic_num: int, hours: int = 10, test_mode: bool = False, fast_mode: bool = False, render_only: bool = False):
     """Launch the epic training session with proper continuity."""
     print(f"🎮 LAUNCHING CONTINUOUS EPIC TRAINING")
     print(f"=" * 60)
-
+    
     epic_name, epic_desc = get_epic_info(game, epic_num)
     env_id = get_game_env_id(game)
-
+    
     print(f"🎯 Game: {game.title()}")
     print(f"🚀 Epic: {epic_name}")
     print(f"📖 Description: {epic_desc}")
     print(f"🎮 Environment: {env_id}")
-    print(f"⏱️  Duration: {hours} hours")
+    if not render_only:
+        print(f"⏱️  Duration: {hours} hours")
     print(f"🧪 Test Mode: {test_mode}")
-
-    # Validate epic progression
-    if not validate_epic_progression(game, epic_num):
+    print(f"⚡ Fast Mode: {fast_mode}")
+    print(f"🎥 Render Only: {render_only}")
+    
+    # Set up directories
+    paths = setup_epic_directories(game, epic_num)
+    
+    # Validate epic progression (skip if render only)
+    if not render_only and not validate_epic_progression(game, epic_num):
         return False
-
+        
     # Find previous model if this is a continuation epic
-    previous_model = find_previous_epic_model(game, epic_num)
-
+    previous_model = find_previous_epic_model(game, epic_num) if not render_only else None
+    
+    # Create configuration
+    config_path = create_epic_config(game, epic_num, paths, hours, previous_model, fast_mode)
+    if not config_path:
+        return False
+        
+    if render_only:
+        # Just run the post-training render
+        return run_post_training_render(game, epic_num, paths, config_path, hours)
+    
+    # Normal training flow
     if epic_num > 1:
         if previous_model:
             print(f"🔗 Continuation Mode: Will load model from Epic {epic_num-1}")
@@ -296,19 +367,13 @@ def launch_continuous_training(game: str, epic_num: int, hours: int = 10, test_m
     else:
         print(f"🆕 Fresh Start: Training from random initialization")
         print(f"📈 Expected progression: Random → Competent performance")
-
+        
     print()
-
-    # Set up directories
-    paths = setup_epic_directories(game, epic_num)
     print(f"📁 Epic directory: {paths['epic_dir']}")
-
-    # Create configuration
-    config_path = create_epic_config(game, epic_num, paths, hours, previous_model)
-
+    
     # Create metadata
     create_epic_metadata(game, epic_num, paths, hours, previous_model)
-
+    
     # Prepare training command
     if test_mode:
         # Short test run
@@ -321,14 +386,14 @@ def launch_continuous_training(game: str, epic_num: int, hours: int = 10, test_m
     else:
         # Full epic training
         cmd = [
-            sys.executable, "training/train.py",
+            sys.executable, "training/train.py", 
             "--verbose", "1"
         ]
         print(f"🚀 Starting {hours}-hour epic training...")
-
+    
     print(f"Command: {' '.join(cmd)}")
     print("=" * 60)
-
+    
     # Set environment variables for the training script
     env = os.environ.copy()
     env['EPIC_GAME'] = game
@@ -336,25 +401,24 @@ def launch_continuous_training(game: str, epic_num: int, hours: int = 10, test_m
     env['EPIC_DIR'] = str(paths['epic_dir'])
     if previous_model:
         env['EPIC_PREVIOUS_MODEL'] = previous_model
-
+        
     # Launch training
-    import subprocess
     try:
         process = subprocess.run(cmd, env=env, cwd=Path.cwd())
-
+        
         if process.returncode == 0:
             print("🎉 EPIC TRAINING COMPLETED!")
-
+            
             # Save final model
             final_model_path = paths['models_dir'] / "final" / f"epic_{epic_num:03d}_final_model.zip"
             latest_checkpoint = paths['models_dir'] / "checkpoints" / "latest.zip"
-
+            
             if latest_checkpoint.exists():
                 # Copy latest checkpoint as final model
                 final_model_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(str(latest_checkpoint), str(final_model_path))
                 print(f"💾 Final model saved: {final_model_path}")
-
+            
             # Update metadata
             metadata_path = paths['metadata_dir'] / f"epic_{epic_num:03d}_info.json"
             if metadata_path.exists():
@@ -365,15 +429,21 @@ def launch_continuous_training(game: str, epic_num: int, hours: int = 10, test_m
                 metadata['final_model_path'] = str(final_model_path)
                 with open(metadata_path, 'w') as f:
                     json.dump(metadata, f, indent=2)
-
+            
             print(f"📋 Epic {epic_num} ready for next epic continuation!")
+            
+            # If Fast Mode was used, trigger post-training render
+            if fast_mode:
+                print("\\n🚀 Fast Mode: Triggering automatic post-training render...")
+                run_post_training_render(game, epic_num, paths, config_path, hours)
+            
             return True
         else:
             print(f"❌ Training failed with return code: {process.returncode}")
             return False
-
+            
     except KeyboardInterrupt:
-        print("\n⏹️  Training interrupted by user")
+        print("\\n⏹️  Training interrupted by user")
         return False
     except Exception as e:
         print(f"❌ Error during training: {e}")
@@ -382,31 +452,45 @@ def launch_continuous_training(game: str, epic_num: int, hours: int = 10, test_m
 def main():
     """Main function."""
     parser = argparse.ArgumentParser(description="Launch continuous epic training sessions")
-    parser.add_argument("--game", required=True,
-                       choices=["breakout", "pong", "space_invaders", "asteroids", "pacman", "frogger",
-                               "tetris", "tetris_authentic", "tetris_gb_authentic",
-                               "mario_land_authentic", "super_mario_land_authentic",
-                               "kirby_authentic", "kirbys_dream_land_authentic",
-                               "tetris_gb", "super_mario_land", "kirbys_dream_land", "mario_land", "kirby"],
-                       help="Game to train on")
+    parser.add_argument("--game", required=True, 
+                        choices=["breakout", "pong", "space_invaders", "asteroids", "pacman", "frogger", 
+                                "tetris", "tetris_authentic", "tetris_gb_authentic",
+                                "mario_land_authentic", "super_mario_land_authentic",
+                                "kirby_authentic", "kirbys_dream_land_authentic",
+                                "tetris_gb", "super_mario_land", "kirbys_dream_land", "mario_land", "kirby"],
+                        help="Game to train on")
     parser.add_argument("--epic", type=int, required=True, choices=list(range(1, 11)),
-                       help="Epic number (1-10: from_scratch to legendary_status)")
+                        help="Epic number (1-10: from_scratch to legendary_status)")
     parser.add_argument("--hours", type=int, default=10,
-                       help="Training duration in hours (default: 10)")
+                        help="Training duration in hours (default: 10)")
     parser.add_argument("--test", action="store_true",
-                       help="Run a short test instead of full training")
-
+                        help="Run a short test instead of full training")
+    parser.add_argument("--fast", action="store_true",
+                        help="Fast mode: disable live videos, train faster, render after")
+    parser.add_argument("--render-only", action="store_true",
+                        help="Skip training and just run the video generator for an existing epic")
+    
     args = parser.parse_args()
-
-    success = launch_continuous_training(args.game, args.epic, args.hours, args.test)
-
+    
+    success = launch_continuous_training(
+        args.game, 
+        args.epic, 
+        args.hours, 
+        args.test,
+        args.fast,
+        args.render_only
+    )
+    
     if success:
-        print(f"\n✅ Epic {args.epic} completed successfully!")
-        if args.epic < 3:
-            print(f"🚀 Ready to run Epic {args.epic + 1} for continued progression!")
-            print(f"   Command: python train_epic_continuous.py --game {args.game} --epic {args.epic + 1}")
+        if args.render_only:
+             print(f"\\n✅ Epic {args.epic} video render completed successfully!")
+        else:
+            print(f"\\n✅ Epic {args.epic} completed successfully!")
+            if args.epic < 3:
+                print(f"🚀 Ready to run Epic {args.epic + 1} for continued progression!")
+                print(f"   Command: python train_epic_continuous.py --game {args.game} --epic {args.epic + 1}")
     else:
-        print(f"\n❌ Epic {args.epic} failed or was cancelled.")
+        print(f"\\n❌ Epic {args.epic} failed or was cancelled.")
 
 if __name__ == "__main__":
     main()

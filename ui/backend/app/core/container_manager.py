@@ -57,6 +57,7 @@ class TrainingConfig:
     learning_rate: float = 2.5e-4
     checkpoint_every_sec: int = 60
     video_recording: bool = True
+    fast_mode: bool = False
     resource_limits: ResourceSpec = None
     
     def __post_init__(self):
@@ -84,7 +85,8 @@ class TrainingConfig:
                 'checkpoint_every_sec': self.checkpoint_every_sec
             },
             'recording': {
-                'enabled': self.video_recording
+                'enabled': self.video_recording and not self.fast_mode,
+                'milestone_clip_seconds': 0 if self.fast_mode else 10
             }
         }
 
