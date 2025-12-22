@@ -45,6 +45,7 @@ env/
 htmlcov/
 
 # ML/AI specific - Model files and checkpoints
+models
 models/checkpoints/*.zip
 models/checkpoints/*.pt
 models/checkpoints/*.pth
@@ -74,7 +75,9 @@ logs/tb/*
 !logs/tb/.gitkeep
 *.log
 
-# Video outputs (all video files are large and shouldn't be in git)
+# Video outputs (all training video outputs should be ignored)
+video/
+videos/
 video/**/*.mp4
 video/**/*.avi
 video/**/*.mov

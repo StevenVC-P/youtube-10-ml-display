@@ -214,14 +214,23 @@ class TrainingWrapper:
                 except psutil.NoSuchProcess:
                     break
                 
-                # TODO: Parse training logs to extract metrics
-                # This would involve reading the log file and extracting:
-                # - Current timesteps
-                # - Current episodes
-                # - Current reward
-                # - Training progress
-                
                 await asyncio.sleep(10)  # Check every 10 seconds
+
+            # Process finished
+            exit_code = self.process.poll()
+            if exit_code == 0:
+                logger.info(f"Training completed successfully for container {self.container_id}")
+                
+                # Check for Fast Mode auto-render
+                training_config = self.config.get('train', {})
+                fast_mode = self.config.get('recording', {}).get('milestone_clip_seconds', 10) == 0
+                
+                # Note: We infer fast_mode from the 0 clip duration set in container_manager
+                if fast_mode:
+                    logger.info(f"Fast Mode detected for {self.container_id}. Triggering post-training render...")
+                    await self._trigger_post_training_render()
+            else:
+                logger.error(f"Training failed for container {self.container_id} with exit code {exit_code}")
                 
         except asyncio.CancelledError:
             pass
@@ -260,6 +269,80 @@ class TrainingWrapper:
     def get_process_id(self) -> Optional[int]:
         """Get the process ID."""
         return self.process.pid if self.process else None
+
+    async def _trigger_post_training_render(self):
+        """Trigger post-training video generation for Fast Mode."""
+        try:
+            # Construct path to video generator script relative to backend
+            # Backend: ui/backend/app/core/training_wrapper.py
+            # Root:    ui/backend/app/core/../../../..  -> .
+            # Script:  training/post_training_video_generator.py
+            
+            # We are running inside the container working directory context
+            # So we can just call python -m training.post_training_video_generator
+            
+            # Use 'total_timesteps' to calculate hours for video length
+            # Assuming 100k steps ~ 1 hour (rough estimate, but we need seconds)
+            # Actually, standard epic is 10h. Let's look for hours in config or default to 10h.
+            # For simplicity, we'll generate a continuous video for the full duration.
+            
+            # Calculate total seconds based on Total Timesteps / Est SPS (e.g. 1000) ??
+            # Or just use the --total-seconds arg if we can infer it.
+            # Let's rely on finding 'total_timesteps' and converting to estimated seconds?
+            # Or better: check config for 'hours'.
+            # TrainingConfig has 'total_timesteps'.
+            # Standard: 1M steps for ~1-2 hours.
+            
+            # Safer bet: Generate based on checkpoints found.
+            # But post_training_video_generator requires --total-seconds for continuous mode.
+            # Let's hardcode a reasonable default or try to get it from config if passed.
+            # The UI config sets 'total_timesteps'.
+            
+            # Let's assume 36000 seconds (10 hours) for now as default 'Epic' length?
+            # Or just generate for whatever length exists.
+            
+            # Wait, post_training_video_generator needs --config.
+            config_file = self.working_directory / "config.yaml"
+            model_dir = self.working_directory / "models/checkpoints"
+            output_dir = self.working_directory / "video/merged_epic"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Infer duration from total_timesteps 
+            # (Assuming standard Atari 4-frame skip, so 1 step = 4 frames. 60 FPS game speed.
+            # Realtime: 60 frames/sec. 15 steps/sec game time.
+            # Total seconds = total_timesteps / 15 ?)
+            # Actually, let's just use 36000 (10h) as intended for "Fast Mode" epic training.
+            
+            total_timesteps = self.config.get('train', {}).get('total_timesteps', 1000000)
+            # Approx 10M steps = 10 hours for standard PPO?
+            # Let's use 10 hours (36000s) as safeguard, ensuring complete coverage.
+            total_seconds = 36000 
+            
+            cmd = [
+                sys.executable, "-m", "training.post_training_video_generator",
+                "--config", str(config_file),
+                "--model-dir", str(model_dir),
+                "--output-dir", str(output_dir),
+                "--total-seconds", str(total_seconds),
+                "--verbose", "1"
+            ]
+            
+            log_file = self.working_directory / "rendering.log"
+            
+            with open(log_file, 'w') as log:
+                logger.info(f"Starting post-render: {' '.join(cmd)}")
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=self.working_directory,
+                    stdout=log,
+                    stderr=subprocess.STDOUT
+                )
+                
+                # We won't block the main loop, but we could add it to a tracking list if needed.
+                # For now, fire and forget (logging to file).
+                
+        except Exception as e:
+            logger.error(f"Failed to trigger post-render: {e}")
 
 
 class TrainingManager:

@@ -14,6 +14,7 @@ import sys
 import argparse
 import tempfile
 import subprocess
+import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import yaml
@@ -30,6 +31,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from envs.make_env import make_eval_env
 from tools.stream.grid_composer import SingleScreenComposer
+from tools.retro_ml_desktop.provenance import (
+    iso_utc_now,
+    sanitize_filename_component,
+    sha256_file,
+    short_git_commit,
+)
 
 
 class PostTrainingVideoGenerator:
@@ -59,6 +66,9 @@ class PostTrainingVideoGenerator:
         self.db = db  # MetricsDatabase instance for progress tracking
         self.run_id = run_id  # Training run ID for database tracking
         self.segment_counter = 0
+        self.run_metadata = self._load_run_metadata()
+        self.overlay_metadata = {}
+        self.git_short, self.git_full = short_git_commit(Path(__file__).parent.parent)
 
         # Showcase mode settings (opt-in). Accept either top-level keys or under "showcase".
         showcase_cfg = config.get('showcase', {})
@@ -81,6 +91,17 @@ class PostTrainingVideoGenerator:
             print(f"  - Clip duration: {clip_seconds}s @ {fps} FPS")
             if self.db and self.run_id:
                 print(f"  - Progress tracking enabled for run: {self.run_id}")
+
+    def _load_run_metadata(self) -> Dict[str, Any]:
+        """Load persisted run metadata (lineage/provenance) if available."""
+        try:
+            run_identifier = self.run_id or self.model_dir.name
+            meta_path = Path("models") / "checkpoints" / str(run_identifier) / "run_metadata.json"
+            if meta_path.exists():
+                return yaml.safe_load(meta_path.read_text())
+        except Exception:
+            pass
+        return {}
     
     def find_checkpoint_files(self) -> Dict[float, Path]:
         """Find all available checkpoint files and map them to milestone percentages."""
@@ -160,6 +181,161 @@ class PostTrainingVideoGenerator:
                     continue
         
         return None
+
+    def _build_checkpoint_identifier(self, checkpoint_path: Path, training_context: Optional[Dict[str, Any]]) -> str:
+        """Build human-readable checkpoint identifier."""
+        step = None
+        if training_context:
+            step = training_context.get('checkpoint_timestep') or training_context.get('total_timesteps')
+        if not step:
+            try:
+                numbers = re.findall(r'(\d+)', checkpoint_path.stem)
+                if numbers:
+                    step = int(numbers[-1])
+            except Exception:
+                step = None
+        ckpt_hash = sha256_file(checkpoint_path)
+        short_hash = ckpt_hash[:8] if ckpt_hash else "unknown"
+        if step:
+            return f"step-{step}-{short_hash}"
+        return f"ckpt-{short_hash}"
+
+    def _build_video_filename(
+        self,
+        checkpoint_path: Path,
+        training_context: Optional[Dict[str, Any]],
+        mode: str,
+        seed: int,
+        variant_label: Optional[str] = None
+    ) -> Path:
+        """Construct strict, sortable video filename."""
+        env_id = sanitize_filename_component(self.config.get('game', {}).get('env_id', 'env'))
+        algo = sanitize_filename_component(self.config.get('train', {}).get('algo', 'algo'))
+        run_name = sanitize_filename_component(
+            self.run_metadata.get('display_name')
+            or self.run_metadata.get('root_name')
+            or self.run_metadata.get('custom_name')
+            or self.run_metadata.get('run_id')
+            or self.run_id
+            or "run"
+        )
+        base_run = sanitize_filename_component(self.run_metadata.get('base_run_id') or run_name)
+        leg_idx = self.run_metadata.get('leg_index', 0)
+        branch = sanitize_filename_component(
+            self.run_metadata.get('branch_token')
+            or self.run_metadata.get('branch_id', 'main')
+        )
+        variant_idx = self.run_metadata.get('variant_index') or 1
+        ckpt_id = sanitize_filename_component(self._build_checkpoint_identifier(checkpoint_path, training_context))
+        ts_safe = iso_utc_now().replace(":", "-")
+        filename = (
+            f"{env_id}__{algo}__{run_name}__base-{base_run}__leg-{leg_idx}"
+            f"__branch-{branch}__variant-{variant_idx}__ckpt-{ckpt_id}__mode-{mode}__seed-{seed}__ts-{ts_safe}"
+        )
+        if variant_label:
+            filename += f"__variant-{sanitize_filename_component(variant_label)}"
+        return (self.output_dir / f"{filename}.mp4")
+
+    def _write_manifest(
+        self,
+        video_path: Path,
+        checkpoint_path: Path,
+        checkpoint_hash: Optional[str],
+        training_context: Dict[str, Any],
+        segment_seed: int,
+        mode: str,
+        segment_idx: int = 0,
+        variant_label: Optional[str] = None,
+        segments: Optional[List[Dict[str, Any]]] = None
+    ) -> Path:
+        """Write sidecar manifest JSON with lineage/provenance."""
+        manifest_path = video_path.with_name(f"{video_path.name}.manifest.json")
+        manifest = {
+            "video_path": str(video_path),
+            "created_at": iso_utc_now(),
+            "run_id": self.run_metadata.get("run_id") or self.run_id,
+            "base_run_id": self.run_metadata.get("base_run_id") or self.run_id,
+            "leg_index": self.run_metadata.get("leg_index", 0),
+            "branch_id": self.run_metadata.get("branch_id", "main"),
+            "branch_token": self.run_metadata.get("branch_token"),
+            "variant_index": self.run_metadata.get("variant_index"),
+            "parent_run_id": self.run_metadata.get("parent_run_id"),
+            "parent_checkpoint_path": self.run_metadata.get("parent_checkpoint_path"),
+            "parent_checkpoint_hash": self.run_metadata.get("parent_checkpoint_hash"),
+            "checkpoint_path": str(checkpoint_path),
+            "checkpoint_hash": checkpoint_hash or sha256_file(checkpoint_path),
+            "config_path": self.run_metadata.get("config_path"),
+            "config_hash": self.run_metadata.get("config_hash"),
+            "git_commit": self.run_metadata.get("git_commit") or self.git_short,
+            "git_commit_full": self.run_metadata.get("git_commit_full") or self.git_full,
+            "env_id": self.run_metadata.get("env_id") or self.config.get("game", {}).get("env_id"),
+            "env_version": self.run_metadata.get("env_version"),
+            "wrappers_hash": self.run_metadata.get("wrappers_hash"),
+            "mode": mode,
+            "deterministic": self.run_metadata.get("deterministic"),
+            "epsilon": self.run_metadata.get("epsilon"),
+            "seed": self.run_metadata.get("seed"),
+            "segment_seed": segment_seed,
+            "target_timestep": self.run_metadata.get("target_timestep"),
+            "start_timestep": self.run_metadata.get("start_timestep"),
+            "segments": segments
+            or [
+                {
+                    "segment_idx": segment_idx,
+                    "start_frame": 0,
+                    "end_frame": self.clip_seconds * self.fps,
+                    "segment_seed": segment_seed,
+                    "checkpoint_id": self._build_checkpoint_identifier(checkpoint_path, training_context),
+                    "mode": mode,
+                    "variant": variant_label
+                }
+            ]
+        }
+        manifest["hyperparameters"] = self.run_metadata.get("hyperparameters")
+        manifest["hyperparam_diff"] = self.run_metadata.get("hyperparam_diff")
+        manifest["training_context"] = training_context or {}
+        manifest["root_name"] = self.run_metadata.get("root_name")
+        manifest["display_name"] = self.run_metadata.get("display_name")
+        manifest_path.write_text(yaml.safe_dump(manifest))
+        return manifest_path
+
+    def _build_overlay_metadata(
+        self,
+        checkpoint_id: str,
+        mode: str,
+        seed: int,
+        training_context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Assemble overlay metadata for provenance."""
+        train_cfg = self.config.get("train", {})
+        overlay_meta = {
+            "run_name": self.run_metadata.get("display_name")
+            or self.run_metadata.get("root_name")
+            or self.run_metadata.get("custom_name")
+            or self.run_metadata.get("run_id")
+            or self.run_id
+            or "run",
+            "run_id": self.run_metadata.get("run_id") or self.run_id,
+            "base_run_id": self.run_metadata.get("base_run_id") or self.run_metadata.get("run_id") or self.run_id,
+            "leg_index": self.run_metadata.get("leg_index", 0),
+            "branch_id": self.run_metadata.get("branch_id", "main"),
+            "branch_token": self.run_metadata.get("branch_token"),
+            "variant_index": self.run_metadata.get("variant_index"),
+            "algo": train_cfg.get("algo", "unknown"),
+            "learning_rate": train_cfg.get("learning_rate"),
+            "gamma": train_cfg.get("gamma"),
+            "clip_range": train_cfg.get("clip_range"),
+            "entropy_coef": train_cfg.get("ent_coef"),
+            "epsilon": self.run_metadata.get("epsilon"),
+            "mode": mode,
+            "seed": seed,
+            "target_timestep": self.run_metadata.get("target_timestep"),
+            "start_timestep": self.run_metadata.get("start_timestep"),
+            "checkpoint_id": checkpoint_id,
+            "git_commit": self.run_metadata.get("git_commit") or self.git_short
+        }
+        overlay_meta["training_context"] = training_context or {}
+        return overlay_meta
     
     def generate_all_videos(self) -> List[Path]:
         """Generate videos for all available checkpoints."""
@@ -232,6 +408,7 @@ class PostTrainingVideoGenerator:
 
         # Generate video for each checkpoint
         temp_videos = []
+        segment_details: List[Dict[str, Any]] = []
         for idx, milestone_pct in enumerate(sorted_milestones):
             checkpoint_path = checkpoint_files[milestone_pct]
             self.segment_counter = idx
@@ -251,6 +428,16 @@ class PostTrainingVideoGenerator:
 
                 if video_path:
                     temp_videos.append(video_path)
+                    segment_details.append({
+                        "segment_idx": idx,
+                        "checkpoint_path": str(checkpoint_path),
+                        "checkpoint_hash": sha256_file(checkpoint_path),
+                        "segment_seed": self.showcase_seed_base + idx if self.showcase_mode else 42,
+                        "mode": "eval",
+                        "start_frame": idx * int(seconds_per_checkpoint * self.fps),
+                        "end_frame": (idx + 1) * int(seconds_per_checkpoint * self.fps),
+                        "checkpoint_id": self._build_checkpoint_identifier(checkpoint_path, None)
+                    })
                     if self.verbose >= 1:
                         print(f"[PostVideo] [OK] Generated segment for {milestone_pct}%: {video_path.name}")
                 else:
@@ -282,6 +469,19 @@ class PostTrainingVideoGenerator:
         if success:
             print(f"[PostVideo] ✅ Continuous video generated: {output_path.name}")
 
+            # Stitched manifest with per-segment provenance
+            if segment_details:
+                self._write_manifest(
+                    video_path=output_path,
+                    checkpoint_path=Path(segment_details[-1]["checkpoint_path"]),
+                    checkpoint_hash=segment_details[-1]["checkpoint_hash"],
+                    training_context={},
+                    segment_seed=segment_details[-1]["segment_seed"],
+                    mode="eval",
+                    segment_idx=len(segment_details) - 1,
+                    segments=segment_details
+                )
+
             # IMPORTANT: Clean up intermediate milestone videos
             # The user only wants the final continuous video, not the segments
             if self.verbose >= 1:
@@ -309,12 +509,20 @@ class PostTrainingVideoGenerator:
     def _generate_milestone_video(self, milestone_pct: float, checkpoint_path: Path, video_id: str = None) -> Optional[Path]:
         """Generate a single milestone video from a checkpoint."""
         try:
-            # Create video filename
-            video_filename = f"step_post_training_pct_{milestone_pct:.0f}_analytics.mp4"
-            video_path = self.output_dir / video_filename
+            # Get training context for this checkpoint
+            training_context = self._get_training_context(milestone_pct)
+            checkpoint_hash = sha256_file(checkpoint_path)
 
+            # Determine randomness seed before naming
+            segment_seed = self.showcase_seed_base + self.segment_counter if self.showcase_mode else 42
+            video_path = self._build_video_filename(
+                checkpoint_path=checkpoint_path,
+                training_context=training_context,
+                mode="eval",
+                seed=segment_seed
+            )
             if self.verbose >= 1:
-                print(f"[PostVideo] Generating video: {video_filename}")
+                print(f"[PostVideo] Generating video: {video_path.name}")
 
             # Create database entry for progress tracking
             if self.db and self.run_id and video_id:
@@ -322,13 +530,10 @@ class PostTrainingVideoGenerator:
                 self.db.create_video_generation(
                     video_id=video_id,
                     run_id=self.run_id,
-                    video_name=video_filename,
+                    video_name=video_path.name,
                     video_path=str(video_path),
                     total_frames=target_frames
                 )
-
-            # Get training context for this checkpoint
-            training_context = self._get_training_context(milestone_pct)
 
             # Load model from checkpoint
             model = self._load_model(checkpoint_path)
@@ -338,7 +543,6 @@ class PostTrainingVideoGenerator:
                 return None
 
             # Create evaluation environment with proper wrappers and rgb_array render mode
-            segment_seed = self.showcase_seed_base + self.segment_counter if self.showcase_mode else 42
             env = make_eval_env(
                 config=self.config,
                 seed=segment_seed,
@@ -347,6 +551,14 @@ class PostTrainingVideoGenerator:
             # Ensure segment seed is applied before recording begins
             env.reset(seed=segment_seed)
             print(f"[SHOWCASE] segment_start run_id={self.run_id} idx={self.segment_counter} seed={segment_seed} env=new reset_seeded=true")
+
+            checkpoint_id = self._build_checkpoint_identifier(checkpoint_path, training_context)
+            self.overlay_metadata = self._build_overlay_metadata(
+                checkpoint_id=checkpoint_id,
+                mode="eval",
+                seed=segment_seed,
+                training_context=training_context
+            )
 
             # Record gameplay frames DIRECTLY to video (streaming mode)
             success = self._record_gameplay_to_video(
@@ -361,6 +573,17 @@ class PostTrainingVideoGenerator:
 
             # Cleanup
             env.close()
+
+            if success:
+                self._write_manifest(
+                    video_path=video_path,
+                    checkpoint_path=checkpoint_path,
+                    checkpoint_hash=checkpoint_hash,
+                    training_context=training_context,
+                    segment_seed=segment_seed,
+                    mode="eval",
+                    segment_idx=self.segment_counter
+                )
 
             # Update database with completion status
             if self.db and video_id:
@@ -556,6 +779,10 @@ class PostTrainingVideoGenerator:
                     analytics['segment_idx'] = segment_idx
                     analytics['showcase_epsilon'] = exploration_rate
                     analytics['showcase_stochastic'] = not deterministic_flag
+                    # Use training context timestep when available for provenance overlay
+                    if training_context and training_context.get('checkpoint_timestep'):
+                        analytics['step'] = training_context.get('checkpoint_timestep')
+                    analytics['target_timestep'] = self.overlay_metadata.get('target_timestep') if hasattr(self, 'overlay_metadata') else None
 
                     # Create enhanced frame with neural network visualization
                     enhanced_frame = self._create_enhanced_frame(game_frame, analytics)
@@ -869,7 +1096,49 @@ class PostTrainingVideoGenerator:
             )
             cv2.putText(enhanced_frame, banner, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
 
+        if self.overlay_metadata:
+            enhanced_frame = self._apply_research_overlay(enhanced_frame, analytics)
+
         return enhanced_frame
+
+    def _apply_research_overlay(self, frame: np.ndarray, analytics: Dict[str, Any]) -> np.ndarray:
+        """Apply provenance-rich overlay onto combined frame."""
+        overlay = frame.copy()
+        meta = self.overlay_metadata or {}
+        ctx = meta.get("training_context", {})
+
+        # Top bar background
+        cv2.rectangle(overlay, (0, 0), (frame.shape[1], 50), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, frame)
+
+        # Compose lines
+        line1 = (
+            f"{meta.get('run_name', 'run')} | run_id={meta.get('run_id')} "
+            f"| base={meta.get('base_run_id')} leg={meta.get('leg_index')} branch={meta.get('branch_id')} "
+            f"| ckpt={meta.get('checkpoint_id')}"
+        )
+        target_ts = meta.get("target_timestep") or ctx.get("total_timesteps") or 0
+        current_step = analytics.get("step", 0)
+        try:
+            current_step = int(current_step)
+        except Exception:
+            current_step = 0
+        line2 = (
+            f"{meta.get('algo', '').upper()} lr={meta.get('learning_rate')} "
+            f"gamma={meta.get('gamma')} clip={meta.get('clip_range')} ent={meta.get('entropy_coef')} "
+            f"eps={analytics.get('showcase_epsilon', meta.get('epsilon', 0)):.3f} mode={meta.get('mode', 'eval')} "
+            f"seed={analytics.get('segment_seed', meta.get('seed'))} git={meta.get('git_commit') or ''} "
+            f"step={current_step:,}/{int(target_ts):,} reward={analytics.get('episode_reward', 0.0):.1f}"
+        )
+        cv2.putText(frame, line1, (10, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, line2, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 220, 255), 1, cv2.LINE_AA)
+
+        # Segment banner for first second
+        if analytics.get("segment_idx") is not None and analytics.get("frame_in_video", 0) < self.fps:
+            banner = f"SEG {analytics.get('segment_idx')} | seed={analytics.get('segment_seed')} | mode={meta.get('mode', 'eval')}"
+            cv2.putText(frame, banner, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+
+        return frame
 
     def _draw_analytics_panel(self, panel: np.ndarray, analytics: Dict[str, Any]) -> None:
         """Draw ML analytics information on the panel."""

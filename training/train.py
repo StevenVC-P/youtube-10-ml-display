@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
 import logging
+import subprocess
 
 import torch
 import numpy as np
@@ -175,6 +176,53 @@ class TrainingStatsCallback(BaseCallback):
         return True
 
 
+class InlineProgressPrinter(BaseCallback):
+    """SB3 callback that prints compact progress lines to stdout for desktop collector."""
+
+    def __init__(
+        self,
+        total_target_steps: int,
+        start_timestep: int = 0,
+        run_id: str = None,
+        log_every_steps: int = 5000,
+        verbose: int = 1
+    ):
+        super().__init__(verbose)
+        self.total_target_steps = total_target_steps or 0
+        self.start_timestep = start_timestep or 0
+        self.run_id = run_id
+        self.log_every_steps = max(1, log_every_steps or 1)
+        self._start_time = None
+
+    def _on_training_start(self) -> None:
+        self._start_time = time.time()
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.log_every_steps != 0:
+            return True
+
+        current_steps = self.num_timesteps + self.start_timestep
+        total_steps = self.total_target_steps or max(current_steps, 1)
+        progress_pct = (current_steps / total_steps) * 100 if total_steps else 0.0
+
+        elapsed = (time.time() - self._start_time) if self._start_time else 0.0
+        speed = (self.n_calls / elapsed) if elapsed > 0 else 0.0
+        remaining_steps = max(total_steps - current_steps, 0)
+        eta_hours = (remaining_steps / speed) / 3600 if speed > 0 else float("inf")
+        eta_str = f"{eta_hours:.2f}" if eta_hours != float("inf") else "inf"
+        run_tag = f" run_id={self.run_id}" if self.run_id else ""
+
+        print(
+            f"[Stats] Progress: {current_steps:,}/{total_steps:,} ({progress_pct:.1f}%) | "
+            f"Speed: {speed:.1f} steps/s | ETA: {eta_str}h{run_tag}",
+            flush=True
+        )
+        return True
+
+
+# Simple guard to ensure the class is defined
+assert InlineProgressPrinter is not None
+
 def setup_tensorboard_logging(config: Dict[str, Any]) -> str:
     """Setup TensorBoard logging directory"""
     tb_log_path = Path(config['paths']['logs_tb'])
@@ -240,11 +288,32 @@ def train_agent(
     # Create vectorized environment
     train_config = config['train']
     n_envs = train_config.get('vec_envs', 8)
+    force_single_env = bool(train_config.get('force_single_env'))
+    if force_single_env:
+        n_envs = 1
+        print("[SENTINEL] force_single_env enabled: vec_envs=1", flush=True)
 
     if verbose > 0:
         print(f">> Creating {n_envs} vectorized environments...")
-        if run_id:
-            print(f">> Training video recording enabled for run: {run_id}")
+
+        training_video_enabled_cfg = bool(config.get("training_video", {}).get("enabled", False))
+        training_video_base_dir = config.get("paths", {}).get("videos_training", "video/training")
+        training_video_out_dir = os.path.join(training_video_base_dir, run_id) if run_id else None
+
+        training_video_reasons: list[str] = []
+        if not training_video_enabled_cfg:
+            training_video_reasons.append("config.training_video.enabled=false")
+        if run_id is None:
+            training_video_reasons.append("run_id=None")
+
+        training_video_enabled = training_video_enabled_cfg and run_id is not None
+        training_video_reason = "enabled" if training_video_enabled else "; ".join(training_video_reasons) or "disabled"
+
+        print(
+            f"TRAINING_VIDEO enabled={training_video_enabled} reason={training_video_reason} out_dir={training_video_out_dir} n_envs={n_envs}",
+            flush=True,
+        )
+    print(f"[SENTINEL] before_env_creation n_envs={n_envs}", flush=True)
 
     vec_env = make_vec_env(
         config=config,
@@ -252,6 +321,7 @@ def train_agent(
         seed=config.get('seed', 42),
         run_id=run_id  # Pass run_id for training video recording
     )
+    print("[SENTINEL] after_env_creation", flush=True)
 
     # Get environment info
     env_info = get_env_info(config)
@@ -263,6 +333,7 @@ def train_agent(
         print(f"  - Number of actions: {env_info['n_actions']}")
 
     # Create or load algorithm
+    print(f"[SENTINEL] before_model_creation resume_from_checkpoint={bool(resume_from_checkpoint and Path(resume_from_checkpoint).exists())}", flush=True)
     if resume_from_checkpoint and Path(resume_from_checkpoint).exists():
         # Resume from checkpoint
         if verbose > 0:
@@ -287,6 +358,7 @@ def train_agent(
             print(f"[Agent] Creating {train_config['algo'].upper()} algorithm...")
 
         algo = create_algo(config, vec_env, tensorboard_log=tb_log_path)
+    print("[SENTINEL] after_model_creation", flush=True)
 
     # Get algorithm info
     algo_info = get_algorithm_info(algo)
@@ -367,6 +439,18 @@ def train_agent(
     )
     callbacks.append(stats_callback)
     
+    # Inline stdout progress printer to keep desktop collector fed with metrics
+    absolute_target = train_config.get('target_total_timesteps', total_timesteps)
+    start_timestep = train_config.get('start_timestep', 0)
+    progress_printer = InlineProgressPrinter(
+        total_target_steps=absolute_target,
+        start_timestep=start_timestep,
+        run_id=run_id,
+        log_every_steps=train_config.get('log_every_steps', 5000),
+        verbose=verbose
+    )
+    callbacks.append(progress_printer)
+    
     callback_list = CallbackList(callbacks)
 
     if verbose > 0:
@@ -376,11 +460,13 @@ def train_agent(
     
     # Start training
     start_time = time.time()
+    print(f"[SENTINEL] before_model_learn total_timesteps={total_timesteps} reset_num_timesteps={not bool(resume_from_checkpoint and Path(resume_from_checkpoint).exists())}", flush=True)
     
     try:
         # When resuming, don't reset timesteps to preserve progress
         reset_timesteps = not bool(resume_from_checkpoint and Path(resume_from_checkpoint).exists())
 
+        print("[SENTINEL] entering_learn", flush=True)
         algo.learn(
             total_timesteps=total_timesteps,
             callback=callback_list,
@@ -449,6 +535,18 @@ def main():
         help="Path to checkpoint to resume training from"
     )
 
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Enable fast mode (no live video recording)"
+    )
+
+    parser.add_argument(
+        "--render-only",
+        action="store_true",
+        help="Skip training, run post-training render only"
+    )
+
     args = parser.parse_args()
     
     # Load configuration (epic-specific if available)
@@ -462,58 +560,161 @@ def main():
         else:
             config = load_config(args.config)
             print(f"[Default] Using config: {args.config}, environment ID: {config['game']['env_id']}")
+        print(f"[SENTINEL] after_config_load env_id={config['game']['env_id']} vec_envs={config.get('train', {}).get('vec_envs')} seed={config.get('seed')}", flush=True)
     except Exception as e:
         print(f"ERROR: Error loading config: {e}")
         sys.exit(1)
 
+    # Handle Fast Mode and Render Only overrides
+    if args.fast:
+        print("🚀 Fast Mode: Disabling live video recording to maximize training speed")
+        if 'recording' not in config: config['recording'] = {}
+        config['recording']['milestone_clip_seconds'] = 0
+        if 'training_video' not in config: config['training_video'] = {}
+        config['training_video']['enabled'] = False
+
     # Start training
-    try:
-        checkpoint_path = train_agent(
-            config=config,
-            dryrun_seconds=args.dryrun_seconds,
-            verbose=args.verbose,
-            resume_from_checkpoint=args.resume_from
-        )
-        print(f"\n>> Training complete! Checkpoint: {checkpoint_path}")
+    checkpoint_path = None
+    if not args.render_only:
+        try:
+            checkpoint_path = train_agent(
+                config=config,
+                dryrun_seconds=args.dryrun_seconds,
+                verbose=args.verbose,
+                resume_from_checkpoint=args.resume_from
+            )
+            print(f"\n>> Training complete! Checkpoint: {checkpoint_path}")
 
-    except Exception as e:
-        # Enhanced error handling with CUDA diagnostics
-        import traceback
-        traceback_str = traceback.format_exc()
+        except Exception as e:
+            # Enhanced error handling with CUDA diagnostics
+            import traceback
+            traceback_str = traceback.format_exc()
 
-        # Check if this is a CUDA-related error
-        error_message = str(e).lower()
-        is_cuda_error = any(keyword in error_message for keyword in [
-            'cuda', 'gpu', 'memory allocation', 'device', 'kernel'
-        ])
+            # Check if this is a CUDA-related error
+            error_message = str(e).lower()
+            is_cuda_error = any(keyword in error_message for keyword in [
+                'cuda', 'gpu', 'memory allocation', 'device', 'kernel'
+            ])
 
-        if is_cuda_error:
-            try:
-                # Import CUDA diagnostics (if available)
-                sys.path.insert(0, str(Path(__file__).parent.parent))
-                from tools.retro_ml_desktop.cuda_diagnostics import create_user_friendly_error_message
+            if is_cuda_error:
+                try:
+                    # Import CUDA diagnostics (if available)
+                    sys.path.insert(0, str(Path(__file__).parent.parent))
+                    from tools.retro_ml_desktop.cuda_diagnostics import create_user_friendly_error_message
 
-                # Create user-friendly error message
-                friendly_message = create_user_friendly_error_message(e, traceback_str)
-                print(friendly_message)
+                    # Create user-friendly error message
+                    friendly_message = create_user_friendly_error_message(e, traceback_str)
+                    print(friendly_message)
 
-            except ImportError:
-                # Fallback to basic CUDA error handling
-                print(f"ERROR: CUDA/GPU Training failed: {e}")
-                print("\n[SOLUTIONS] QUICK SOLUTIONS TO TRY:")
-                print("  1. Reduce batch size (try 128 or 64 instead of 256)")
-                print("  2. Reduce number of environments (try 4 or 2 instead of 8)")
-                print("  3. Close other GPU applications")
-                print("  4. Restart the application")
-                print("  5. Use CPU training instead")
-                print("\n[TIP] Check GPU memory usage and update NVIDIA drivers.")
-        else:
-            print(f"ERROR: Training failed: {e}")
+                except ImportError:
+                    # Fallback to basic CUDA error handling
+                    print(f"ERROR: CUDA/GPU Training failed: {e}")
+                    print("\n[SOLUTIONS] QUICK SOLUTIONS TO TRY:")
+                    print("  1. Reduce batch size (try 128 or 64 instead of 256)")
+                    print("  2. Reduce number of environments (try 4 or 2 instead of 8)")
+                    print("  3. Close other GPU applications")
+                    print("  4. Restart the application")
+                    print("  5. Use CPU training instead")
+                    print("\n[TIP] Check GPU memory usage and update NVIDIA drivers.")
+            else:
+                print(f"ERROR: Training failed: {e}")
 
-        print(f"\n[ERROR DETAILS] Full error details:")
-        traceback.print_exc()
-        sys.exit(1)
+            print(f"\n[ERROR DETAILS] Full error details:")
+            traceback.print_exc()
+            sys.exit(1)
+    
+    # Auto-Render Logic (Fast Mode or Render Only)
+    if (args.fast or args.render_only):
+        print("\n🚀 Fast Mode/Render Only: Triggering automatic post-training render...")
+        try:
+            # Determine correct paths
+            run_id = config.get('train', {}).get('run_id')
+            if not run_id:
+                # Try to infer from config paths
+                models_path = config.get('paths', {}).get('models', '')
+                run_id = Path(models_path).name if models_path else "unknown_run"
+            
+            # Use specific target hours from render config, or default
+            target_hours = config.get('render', {}).get('target_hours', 10)
+            total_seconds = int(target_hours * 3600)
+            
+            # Resolve script path
+            script_dir = Path(__file__).parent
+            render_script = script_dir / "post_training_video_generator.py"
+            
+            if not render_script.exists():
+                print(f"⚠️ Could not find render script at: {render_script}")
+            else:
+                # Build command
+                model_dir = config.get('paths', {}).get('models')
+                if not model_dir:
+                    # Fallback
+                    model_dir = f"models/checkpoints/{run_id}"
+
+                # For output dir, we want the parent of 'milestones' usually, or just use config output path
+                # Ideally read from config['paths']['videos_milestones'] and go up one level
+                milestones_path = config.get('paths', {}).get('videos_milestones')
+                if milestones_path:
+                    output_dir = str(Path(milestones_path).parent)
+                else:
+                    output_dir = f"outputs/{run_id}"
+
+                cmd = [
+                    sys.executable, str(render_script),
+                    "--model-dir", str(model_dir),
+                    "--output-dir", str(output_dir),
+                    "--config", args.config, # Use the config file we loaded
+                    "--total-seconds", str(total_seconds)
+                ]
+                
+                print(f"   Executing: {' '.join(cmd)}")
+                subprocess.run(cmd, check=True)
+                print("✅ Post-training render complete!")
+                
+        except Exception as e:
+            print(f"❌ Failed to run post-training render: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 if __name__ == "__main__":
     main()
+class InlineProgressPrinter(BaseCallback):
+    """
+    Lightweight progress printer to ensure stdout always contains parsable stats
+    for both fresh and resumed runs. Prints at a fixed step interval.
+    """
+
+    def __init__(self, total_target_steps: int, start_timestep: int, run_id: Optional[str], log_every_steps: int = 5000, verbose: int = 0):
+        super().__init__(verbose)
+        self.total_target_steps = total_target_steps
+        self.start_timestep = start_timestep
+        self.log_every_steps = max(1, log_every_steps)
+        self.run_id = run_id
+        self._last_step = 0
+        self._last_time = time.time()
+
+    def _on_step(self) -> bool:
+        # Only log every N new steps
+        if (self.num_timesteps - self._last_step) < self.log_every_steps:
+            return True
+
+        now = time.time()
+        elapsed = max(1e-6, now - self._last_time)
+        step_delta = self.num_timesteps - self._last_step
+        steps_per_sec = step_delta / elapsed if step_delta > 0 else 0.0
+
+        current_abs = self.start_timestep + self.num_timesteps
+        progress_pct = 100.0 * current_abs / self.total_target_steps if self.total_target_steps else 0.0
+        eta_hours = ((self.total_target_steps - current_abs) / steps_per_sec / 3600.0) if steps_per_sec > 0 else 0.0
+
+        # Emit SB3-style stats line (matched by LogParser sb3_progress regex)
+        print(
+            f"[Stats] Progress: {current_abs:,}/{self.total_target_steps:,} ({progress_pct:.1f}%) | Speed: {steps_per_sec:.1f} steps/s | ETA: {eta_hours:.2f}h"
+            + (f" | run_id:{self.run_id}" if self.run_id else ""),
+            flush=True
+        )
+
+        self._last_step = self.num_timesteps
+        self._last_time = now
+        return True

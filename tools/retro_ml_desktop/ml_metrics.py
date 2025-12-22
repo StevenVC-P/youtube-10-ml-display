@@ -151,6 +151,10 @@ class ExperimentRun:
     custom_name: Optional[str] = None
     leg_number: int = 1
     base_run_id: Optional[str] = None
+    root_name: Optional[str] = None
+    display_name: Optional[str] = None
+    branch_token: Optional[str] = None
+    variant_index: int = 1
 
     # Timing
     end_time: Optional[datetime] = None

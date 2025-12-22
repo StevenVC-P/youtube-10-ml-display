@@ -147,7 +147,7 @@ class MLDashboard:
         self.runs_tree.heading("game", text="Game")
         self.runs_tree.heading("gpu", text="GPU")
         self.runs_tree.heading("progress", text="Progress")
-        self.runs_tree.heading("reward", text="Best Reward")
+        self.runs_tree.heading("reward", text="Reward (best/latest)")
         self.runs_tree.heading("duration", text="Duration")
 
         # Column widths
@@ -157,7 +157,7 @@ class MLDashboard:
         self.runs_tree.column("game", width=100)
         self.runs_tree.column("gpu", width=60)
         self.runs_tree.column("progress", width=80)
-        self.runs_tree.column("reward", width=80)
+        self.runs_tree.column("reward", width=120)
         self.runs_tree.column("duration", width=80)
         
         # Scrollbar
@@ -230,6 +230,14 @@ class MLDashboard:
         
         ctk.CTkLabel(current_frame, text="🎯 Current Performance", 
                     font=ctk.CTkFont(size=14, weight="bold")).pack(pady=5)
+
+        # Run identifier for clarity in screenshots
+        self.performance_run_label = ctk.CTkLabel(
+            current_frame,
+            text="Run: none selected",
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.performance_run_label.pack(pady=(0, 5))
         
         # Metrics grid
         self.metrics_grid = ctk.CTkFrame(current_frame)
@@ -418,7 +426,16 @@ class MLDashboard:
 
                 if latest_metrics:
                     progress = f"{latest_metrics.progress_pct:.1f}%"
-                    reward = f"{latest_metrics.episode_reward_mean:.2f}" if latest_metrics.episode_reward_mean else "N/A"
+                    latest_reward = latest_metrics.episode_reward_mean
+                    best_reward = run.best_reward if run.best_reward is not None else latest_reward
+                    if latest_reward is not None and best_reward is not None:
+                        reward = f"{best_reward:.1f} / {latest_reward:.1f}"
+                    elif best_reward is not None:
+                        reward = f"{best_reward:.1f} / N/A"
+                    elif latest_reward is not None:
+                        reward = f"N/A / {latest_reward:.1f}"
+                    else:
+                        reward = "N/A"
                     logging.debug(f"Metrics found - Progress: {progress}, Reward: {reward}")
                 else:
                     progress = "0.0%"
@@ -428,8 +445,15 @@ class MLDashboard:
                 # Duration
                 duration = self._format_duration(run.duration)
 
-                # Use custom_name if available, otherwise use experiment_name
-                display_name = run.custom_name if run.custom_name else run.experiment_name
+                # Prefer display_name, otherwise fall back to existing names and lineage info
+                human_name = run.custom_name if run.custom_name else run.experiment_name
+                display_label = getattr(run, 'display_name', None) or human_name
+                base_id = getattr(run, 'base_run_id', None) or run.run_id
+                leg_num = getattr(run, 'leg_number', None)
+                leg_display = leg_num if leg_num is not None else 0
+                branch_id = getattr(run, 'branch_id', None) or getattr(run, 'branch_token', None) or "main"
+                run_short = f"{run.run_id[:8]}..." if run.run_id else ""
+                display_name = f"{display_label} | base:{base_id} leg:{leg_display} branch:{branch_id} | run:{run_short}"
 
                 # Insert into tree
                 self.runs_tree.insert("", "end",
@@ -550,11 +574,24 @@ class MLDashboard:
     def _update_performance_metrics(self, run_id: str):
         """Update performance metrics display."""
         try:
+            # Identify run for display (name + ID)
+            run_name_display = run_id
+            runs = self.database.get_experiment_runs()
+            run = next((r for r in runs if r.run_id == run_id), None)
+            if run:
+                display_name = getattr(run, 'display_name', None) or run.custom_name or run.experiment_name or run_id
+                run_short = f"{run_id[:8]}..." if run_id else ""
+                run_name_display = f"{display_name} (ID: {run_short})"
+
             # Get summary stats
             stats = self.database.get_run_summary_stats(run_id)
 
             if not stats:
                 return
+
+            # Update header label with run identifier
+            if hasattr(self, "performance_run_label") and run_name_display:
+                self.performance_run_label.configure(text=f"Run: {run_name_display}")
 
             # Clear existing metrics
             for widget in self.metrics_grid.winfo_children():
@@ -591,6 +628,54 @@ class MLDashboard:
                             ("💾 VRAM Used", f"{gpu_info.memory_used_mb:.0f} / {gpu_info.memory_total_mb:.0f} MB"),
                             ("🌡️ GPU Temp", f"{gpu_info.temperature_c:.0f}°C")
                         ])
+
+            # Per-run GPU telemetry (global GPU samples during run window + best-effort attribution)
+            latest_gpu = self.database.get_latest_gpu_attribution(run_id)
+            since_ts = run.start_time.isoformat() if run and getattr(run, "start_time", None) else None
+            avg_gpu = self.database.get_avg_gpu_attribution(run_id, since_ts=since_ts)
+
+            if latest_gpu:
+                try:
+                    util = latest_gpu.get("gpu_util_pct")
+                    used_mb = latest_gpu.get("vram_used_mb")
+                    total_mb = latest_gpu.get("vram_total_mb")
+                    temp_c = latest_gpu.get("temp_c")
+                    run_est = latest_gpu.get("run_gpu_util_est_pct")
+                    pid_vram = latest_gpu.get("pid_vram_used_mb")
+                    util_str = f"{util:.0f}%" if util is not None else "N/A"
+                    vram_str = (
+                        f"{(used_mb/1024):.1f}/{(total_mb/1024):.1f} GB"
+                        if used_mb is not None and total_mb is not None and total_mb > 0
+                        else "N/A"
+                    )
+                    temp_str = f"{temp_c:.0f}°C" if temp_c is not None else "N/A"
+                    if run_est is not None and pid_vram is not None:
+                        metrics.append(("🖥️ GPU Current", f"Global {util_str} | VRAM {vram_str} | Run est util {run_est:.0f}% | PID VRAM {(pid_vram/1024):.1f} GB"))
+                    else:
+                        metrics.append(("🖥️ GPU Current", f"Global {util_str} | VRAM {vram_str} | Run est util N/A (attribution unavailable)"))
+                except Exception:
+                    metrics.append(("🖥️ GPU Current", "N/A"))
+            else:
+                metrics.append(("🖥️ GPU Current", "N/A"))
+
+            if avg_gpu:
+                try:
+                    avg_util = avg_gpu.get("avg_gpu_util_pct")
+                    avg_used_mb = avg_gpu.get("avg_vram_used_mb")
+                    total_mb = avg_gpu.get("vram_total_mb")
+                    avg_run_est = avg_gpu.get("avg_run_gpu_util_est_pct")
+                    avg_pid_vram = avg_gpu.get("avg_pid_vram_used_mb")
+                    avg_util_str = f"{avg_util:.0f}%" if avg_util is not None else "N/A"
+                    avg_vram_str = f"{(avg_used_mb/1024):.1f} GB" if avg_used_mb is not None else "N/A"
+                    total_str = f"{(total_mb/1024):.1f} GB" if total_mb is not None else "N/A"
+                    if avg_run_est is not None and avg_pid_vram is not None:
+                        metrics.append(("🖥️ GPU Average", f"Avg Global {avg_util_str} | Avg VRAM {avg_vram_str} / {total_str} | Avg Run est util {avg_run_est:.0f}% | Avg PID VRAM {(avg_pid_vram/1024):.1f} GB"))
+                    else:
+                        metrics.append(("🖥️ GPU Average", f"Avg Global {avg_util_str} | Avg VRAM {avg_vram_str} / {total_str} | Avg Run est util N/A (attribution unavailable)"))
+                except Exception:
+                    metrics.append(("🖥️ GPU Average", "N/A"))
+            else:
+                metrics.append(("🖥️ GPU Average", "N/A"))
 
             for label, value in metrics:
                 metric_frame = ctk.CTkFrame(self.metrics_grid)

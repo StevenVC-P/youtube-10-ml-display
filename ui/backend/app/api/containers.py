@@ -34,6 +34,7 @@ class TrainingConfigRequest(BaseModel):
     learning_rate: float = Field(default=2.5e-4, ge=1e-6, le=1e-1)
     checkpoint_every_sec: int = Field(default=60, ge=10, le=3600)
     video_recording: bool = Field(default=True)
+    fast_mode: bool = Field(default=False)
     resource_limits: ResourceSpecRequest = Field(default_factory=ResourceSpecRequest)
 
 
@@ -110,6 +111,7 @@ async def create_container(request: CreateContainerRequest):
             learning_rate=request.config.learning_rate,
             checkpoint_every_sec=request.config.checkpoint_every_sec,
             video_recording=request.config.video_recording,
+            fast_mode=request.config.fast_mode,
             resource_limits=resource_spec
         )
         

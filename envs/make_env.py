@@ -244,12 +244,35 @@ def make_vec_env(
             # Use SubprocVecEnv for better performance with multiple envs on Unix
             vec_env_cls = SubprocVecEnv if n_envs > 1 else DummyVecEnv
 
-    # Check if training video recording is enabled
-    training_video_enabled = config.get('training_video', {}).get('enabled', False)
-    record_env_index = config.get('training_video', {}).get('record_env_index', 0)
+    # Training-time video recording config (used by Time-Lapse / progression tools).
+    training_video_config = config.get('training_video', {}) or {}
+    training_video_enabled = bool(training_video_config.get('enabled', False))
+    record_env_index = int(training_video_config.get('record_env_index', 0) or 0)
+
+    video_base_dir = config.get('paths', {}).get('videos_training', 'video/training')
+    resolved_out_dir = os.path.join(video_base_dir, run_id) if run_id else None
+
+    reasons_disabled: list[str] = []
+    if not training_video_enabled:
+        reasons_disabled.append("config.training_video.enabled=false")
+    if run_id is None:
+        reasons_disabled.append("run_id=None")
 
     # Determine if we should enable video recording for this training run
     enable_video_recording = training_video_enabled and run_id is not None
+
+    # Clamp record_env_index so a misconfig doesn't silently record nothing
+    if enable_video_recording and (record_env_index < 0 or record_env_index >= n_envs):
+        logger.warning(
+            f"[VIDEO] record_env_index out of range: {record_env_index} (n_envs={n_envs}); using 0"
+        )
+        record_env_index = 0
+
+    reason = "enabled" if enable_video_recording else "; ".join(reasons_disabled) or "disabled"
+
+    logger.info(
+        f"TRAINING_VIDEO enabled={enable_video_recording} reason={reason} out_dir={resolved_out_dir} n_envs={n_envs}"
+    )
 
     # DEBUG LOGGING
     logger.info(f"[VIDEO DEBUG] make_vec_env called with run_id={run_id}")
@@ -265,7 +288,6 @@ def make_vec_env(
 
         if should_record:
             # Create video directory for this training run
-            video_base_dir = config.get('paths', {}).get('videos_training', 'video/training')
             video_dir = os.path.join(video_base_dir, run_id)
 
             # DEBUG LOGGING
